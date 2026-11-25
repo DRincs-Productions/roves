@@ -17,15 +17,16 @@
 //!   `Sec-Fetch-Site`, when present, must be `same-origin`.
 //!
 //! No response carries CORS headers; every response is `Cache-Control: no-store`.
-//! Commands that change state require `POST`. Modules are a name -> [`Module`] map, so a later
-//! module (Steam) is one more entry.
+//! Commands that change state require `POST`. Modules are a name -> [`Module`] map: `core`,
+//! `saves` and `steam` (Steamworks only through a player-supplied [`SteamApi`]; this file never
+//! links Steamworks, so every player builds it).
 
 use std::{
     collections::HashMap,
     fs,
     io::{self, Write as _},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
     time::UNIX_EPOCH,
 };
 
@@ -63,6 +64,9 @@ pub struct HostConfig {
     /// Asks the player's main loop to close the window through its ordinary close path.
     /// Called from the server thread with the command name; must not block.
     pub request_exit: Arc<dyn Fn(&'static str) + Send + Sync>,
+    /// The player's Steamworks client (Windows player `steam` feature); `None`, or a handle
+    /// already shut down, makes every `steam` command answer the legacy "unavailable" result.
+    pub steam: Option<Arc<SteamHandle>>,
 }
 
 /// Answer of one command.
@@ -94,7 +98,7 @@ impl Call<'_> {
     }
 }
 
-/// A host API module (`core`, `saves`; Steam later). Runs on a blocking thread.
+/// A host API module (`core`, `saves`, `steam`). Runs on a blocking thread.
 pub trait Module: Send + Sync {
     fn call(&self, cmd: &str, call: &Call<'_>) -> Reply;
 }
@@ -106,7 +110,7 @@ pub struct HostApi {
 }
 
 impl HostApi {
-    /// `core` and `saves`. Also returns the saves location status for the player's log:
+    /// `core`, `saves` and `steam`. Also returns the saves location status for the player's log:
     /// the directory, or why saves are unavailable.
     pub fn new(config: HostConfig) -> (Self, Result<PathBuf, String>) {
         let saves = Saves::open(config.saves_dir);
@@ -120,6 +124,12 @@ impl HostApi {
             }),
         );
         modules.insert("saves", Arc::new(saves));
+        modules.insert(
+            "steam",
+            Arc::new(Steam {
+                handle: config.steam,
+            }),
+        );
         (
             Self {
                 modules: Arc::new(modules),
@@ -512,6 +522,157 @@ impl Module for Saves {
     }
 }
 
+/// The Steamworks calls behind the `steam` module, implemented by the player over
+/// `steamworks::Client` (the legacy Servo `steam:` protocol's calls, one method each).
+pub trait SteamApi: Send {
+    fn player_name(&self) -> String;
+    fn app_id(&self) -> u32;
+    /// `SetAchievement` then `StoreStats`.
+    fn unlock_achievement(&self, id: &str) -> bool;
+    fn is_achievement_unlocked(&self, id: &str) -> bool;
+    /// `ClearAchievement` then `StoreStats`.
+    fn clear_achievement(&self, id: &str) -> bool;
+    fn set_stat_int(&self, name: &str, value: i32) -> bool;
+    fn get_stat_int(&self, name: &str) -> i32;
+    fn set_stat_float(&self, name: &str, value: f32) -> bool;
+    fn get_stat_float(&self, name: &str) -> f32;
+    fn store_stats(&self) -> bool;
+    fn is_dlc_installed(&self, app_id: u32) -> bool;
+    fn open_overlay(&self, dialog: &str);
+    /// `None`: the running app's own store page.
+    fn open_store(&self, app_id: Option<u32>);
+    /// Dispatches pending Steam callbacks; called from the Windows player's main loop.
+    #[allow(dead_code)]
+    fn run_callbacks(&self);
+}
+
+/// The player's one Steamworks client, shared by its main loop (callbacks) and the `steam`
+/// module (server threads). Calls are serialized; [`SteamHandle::shutdown`] drops the client
+/// (the player calls it before CEF shuts down), after which every command answers
+/// "unavailable".
+pub struct SteamHandle(Mutex<Option<Box<dyn SteamApi>>>);
+
+// Driven by the Windows player only (`new` with its `steam` feature); the macOS/Linux gates
+// compile this file without a Steamworks client.
+#[allow(dead_code)]
+impl SteamHandle {
+    pub fn new(api: Box<dyn SteamApi>) -> Arc<Self> {
+        Arc::new(Self(Mutex::new(Some(api))))
+    }
+
+    /// Runs `f` on the client, or returns `None` after shutdown.
+    pub fn with<R>(&self, f: impl FnOnce(&dyn SteamApi) -> R) -> Option<R> {
+        let guard = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.as_deref().map(f)
+    }
+
+    /// Drops the client; `true` when it was still there.
+    pub fn shutdown(&self) -> bool {
+        let api = self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
+        api.is_some()
+    }
+}
+
+/// Answer to a missing or malformed `steam` argument (the legacy protocol failed the fetch).
+const BAD_ARGUMENT: &str = "missing or invalid argument";
+
+/// `steam`: the legacy Servo `steam:` protocol (git 27ca0811d6d,
+/// `ports/servoshell/desktop/protocols/steam.rs`): same commands, query names and JSON.
+/// Commands that change state or open the overlay require `POST`.
+struct Steam {
+    handle: Option<Arc<SteamHandle>>,
+}
+
+impl Module for Steam {
+    fn call(&self, cmd: &str, call: &Call<'_>) -> Reply {
+        let mutating = matches!(
+            cmd,
+            "unlock_achievement"
+                | "clear_achievement"
+                | "set_stat_int"
+                | "set_stat_float"
+                | "store_stats"
+                | "open_overlay"
+                | "open_store"
+        );
+        let known = mutating
+            || matches!(
+                cmd,
+                "is_available"
+                    | "get_player_name"
+                    | "get_app_id"
+                    | "is_achievement_unlocked"
+                    | "get_stat_int"
+                    | "get_stat_float"
+                    | "is_dlc_installed"
+            );
+        if !known {
+            return Reply::Error(StatusCode::NOT_FOUND, "unknown command");
+        }
+        if mutating && !call.post() {
+            return Reply::Error(StatusCode::METHOD_NOT_ALLOWED, "POST only");
+        }
+        let answer = self
+            .handle
+            .as_ref()
+            .and_then(|handle| handle.with(|api| steam_command(api, cmd, call)));
+        match answer {
+            Some(Ok(value)) => Reply::Json(value),
+            Some(Err(reason)) => Reply::Error(StatusCode::BAD_REQUEST, reason),
+            // The legacy "unavailable" answers.
+            None => Reply::Json(match cmd {
+                "is_available"
+                | "is_achievement_unlocked"
+                | "is_dlc_installed"
+                | "open_overlay"
+                | "open_store" => Value::Bool(false),
+                "get_stat_int" => Value::from(0i32),
+                "get_stat_float" => Value::from(0f32),
+                _ => Value::Null,
+            }),
+        }
+    }
+}
+
+/// One `steam` command on a live client.
+fn steam_command(api: &dyn SteamApi, cmd: &str, call: &Call<'_>) -> Result<Value, &'static str> {
+    let text = |name: &str| call.arg(name).ok_or(BAD_ARGUMENT);
+    let id = || text("achievement_id");
+    let name = || text("name");
+    Ok(match cmd {
+        "is_available" => Value::Bool(true),
+        "get_player_name" => Value::String(api.player_name()),
+        "get_app_id" => Value::from(api.app_id()),
+        "unlock_achievement" => Value::Bool(api.unlock_achievement(id()?)),
+        "is_achievement_unlocked" => Value::Bool(api.is_achievement_unlocked(id()?)),
+        "clear_achievement" => Value::Bool(api.clear_achievement(id()?)),
+        "set_stat_int" => {
+            let value = text("value")?.parse().map_err(|_| BAD_ARGUMENT)?;
+            Value::Bool(api.set_stat_int(name()?, value))
+        },
+        "get_stat_int" => Value::from(api.get_stat_int(name()?)),
+        "set_stat_float" => {
+            let value = text("value")?.parse().map_err(|_| BAD_ARGUMENT)?;
+            Value::Bool(api.set_stat_float(name()?, value))
+        },
+        "get_stat_float" => Value::from(api.get_stat_float(name()?)),
+        "store_stats" => Value::Bool(api.store_stats()),
+        "is_dlc_installed" => {
+            let app = text("app_id")?.parse().map_err(|_| BAD_ARGUMENT)?;
+            Value::Bool(api.is_dlc_installed(app))
+        },
+        "open_overlay" => {
+            api.open_overlay(text("dialog")?);
+            Value::Bool(true)
+        },
+        // "open_store": an absent or malformed `app_id` opens the running app's page (legacy).
+        _ => {
+            api.open_store(call.arg("app_id").and_then(|v| v.parse().ok()));
+            Value::Bool(true)
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -850,6 +1011,193 @@ mod tests {
         );
         assert!(asked.load(Ordering::SeqCst));
     }
+
+    /// A recording stand-in for the player's Steamworks client.
+    #[derive(Default)]
+    struct FakeSteam(Arc<Mutex<Vec<String>>>);
+
+    impl FakeSteam {
+        fn log(&self, line: String) -> bool {
+            self.0.lock().unwrap().push(line);
+            true
+        }
+    }
+
+    impl SteamApi for FakeSteam {
+        fn player_name(&self) -> String {
+            "player".into()
+        }
+        fn app_id(&self) -> u32 {
+            480
+        }
+        fn unlock_achievement(&self, id: &str) -> bool {
+            self.log(format!("unlock {id}"))
+        }
+        fn is_achievement_unlocked(&self, id: &str) -> bool {
+            id == "ACH_DONE"
+        }
+        fn clear_achievement(&self, id: &str) -> bool {
+            self.log(format!("clear {id}"))
+        }
+        fn set_stat_int(&self, name: &str, value: i32) -> bool {
+            self.log(format!("int {name}={value}"))
+        }
+        fn get_stat_int(&self, _: &str) -> i32 {
+            7
+        }
+        fn set_stat_float(&self, name: &str, value: f32) -> bool {
+            self.log(format!("float {name}={value}"))
+        }
+        fn get_stat_float(&self, _: &str) -> f32 {
+            1.5
+        }
+        fn store_stats(&self) -> bool {
+            self.log("store".into())
+        }
+        fn is_dlc_installed(&self, app_id: u32) -> bool {
+            app_id == 10
+        }
+        fn open_overlay(&self, dialog: &str) {
+            self.log(format!("overlay {dialog}"));
+        }
+        fn open_store(&self, app_id: Option<u32>) {
+            self.log(format!("store page {app_id:?}"));
+        }
+        fn run_callbacks(&self) {
+            self.log("callbacks".into());
+        }
+    }
+
+    fn steam_call(module: &dyn Module, method: Method, cmd: &str, query: &[(&str, &str)]) -> Reply {
+        let query: Vec<(String, String)> = query
+            .iter()
+            .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
+            .collect();
+        module.call(
+            cmd,
+            &Call {
+                method: &method,
+                query: &query,
+                body: b"",
+            },
+        )
+    }
+
+    #[test]
+    fn steam_commands_on_a_client() {
+        let fake = FakeSteam::default();
+        let calls = fake.0.clone();
+        let handle = SteamHandle::new(Box::new(fake));
+        let steam = Steam {
+            handle: Some(handle.clone()),
+        };
+        let get = |cmd: &str, query: &[(&str, &str)]| steam_call(&steam, Method::GET, cmd, query);
+        let post = |cmd: &str, query: &[(&str, &str)]| steam_call(&steam, Method::POST, cmd, query);
+        let json = |v: Value| Reply::Json(v);
+        assert_eq!(get("is_available", &[]), json(json!(true)));
+        assert_eq!(get("get_player_name", &[]), json(json!("player")));
+        assert_eq!(get("get_app_id", &[]), json(json!(480)));
+        let ach = [("achievement_id", "ACH_DONE")];
+        assert_eq!(get("is_achievement_unlocked", &ach), json(json!(true)));
+        assert_eq!(get("get_stat_int", &[("name", "wins")]), json(json!(7)));
+        assert_eq!(get("get_stat_float", &[("name", "t")]), json(json!(1.5)));
+        assert_eq!(
+            get("is_dlc_installed", &[("app_id", "10")]),
+            json(json!(true))
+        );
+        assert_eq!(post("unlock_achievement", &ach), json(json!(true)));
+        assert_eq!(post("clear_achievement", &ach), json(json!(true)));
+        let int = [("name", "wins"), ("value", "-3")];
+        assert_eq!(post("set_stat_int", &int), json(json!(true)));
+        let float = [("name", "t"), ("value", "2.25")];
+        assert_eq!(post("set_stat_float", &float), json(json!(true)));
+        assert_eq!(post("store_stats", &[]), json(json!(true)));
+        assert_eq!(
+            post("open_overlay", &[("dialog", "achievements")]),
+            json(json!(true))
+        );
+        assert_eq!(post("open_store", &[]), json(json!(true)));
+        assert_eq!(post("open_store", &[("app_id", "20")]), json(json!(true)));
+        assert_eq!(handle.with(|api| api.run_callbacks()), Some(()));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [
+                "unlock ACH_DONE",
+                "clear ACH_DONE",
+                "int wins=-3",
+                "float t=2.25",
+                "store",
+                "overlay achievements",
+                "store page None",
+                "store page Some(20)",
+                "callbacks",
+            ]
+        );
+        // Mutations need POST; missing or malformed arguments are refused before Steamworks.
+        assert_eq!(
+            get("unlock_achievement", &ach),
+            Reply::Error(StatusCode::METHOD_NOT_ALLOWED, "POST only")
+        );
+        for (cmd, query) in [
+            ("unlock_achievement", &[][..]),
+            ("set_stat_int", &[("name", "wins"), ("value", "1.5")][..]),
+            ("set_stat_float", &[("value", "1")][..]),
+            ("open_overlay", &[][..]),
+        ] {
+            assert_eq!(
+                post(cmd, query),
+                Reply::Error(StatusCode::BAD_REQUEST, BAD_ARGUMENT),
+                "{cmd}"
+            );
+        }
+        assert_eq!(
+            get("is_dlc_installed", &[("app_id", "x")]),
+            Reply::Error(StatusCode::BAD_REQUEST, BAD_ARGUMENT)
+        );
+        assert_eq!(
+            get("nope", &[]),
+            Reply::Error(StatusCode::NOT_FOUND, "unknown command")
+        );
+        assert_eq!(calls.lock().unwrap().len(), 9);
+        // After the player's shutdown: the "unavailable" answers, nothing reaches the client.
+        assert!(handle.shutdown());
+        assert!(!handle.shutdown());
+        assert_eq!(get("is_available", &[]), json(json!(false)));
+        assert_eq!(handle.with(|api| api.run_callbacks()), None);
+    }
+
+    #[test]
+    fn steam_unavailable_answers() {
+        let steam = Steam { handle: None };
+        for (method, cmd, expected) in [
+            (Method::GET, "is_available", json!(false)),
+            (Method::GET, "get_player_name", Value::Null),
+            (Method::GET, "get_app_id", Value::Null),
+            (Method::GET, "is_achievement_unlocked", json!(false)),
+            (Method::GET, "get_stat_int", json!(0)),
+            (Method::GET, "get_stat_float", json!(0.0)),
+            (Method::GET, "is_dlc_installed", json!(false)),
+            (Method::POST, "unlock_achievement", Value::Null),
+            (Method::POST, "clear_achievement", Value::Null),
+            (Method::POST, "set_stat_int", Value::Null),
+            (Method::POST, "set_stat_float", Value::Null),
+            (Method::POST, "store_stats", Value::Null),
+            (Method::POST, "open_overlay", json!(false)),
+            (Method::POST, "open_store", json!(false)),
+        ] {
+            assert_eq!(
+                steam_call(&steam, method, cmd, &[]),
+                Reply::Json(expected),
+                "{cmd}"
+            );
+        }
+        assert_eq!(
+            steam_call(&steam, Method::GET, "store_stats", &[]),
+            Reply::Error(StatusCode::METHOD_NOT_ALLOWED, "POST only")
+        );
+        assert_eq!(Value::from(0f32).to_string(), "0.0");
+    }
+
     #[test]
     fn routes_over_http() {
         use tower::ServiceExt as _;
@@ -862,6 +1210,7 @@ mod tests {
             request_exit: Arc::new(move |_| {
                 counter.fetch_add(1, Ordering::SeqCst);
             }),
+            steam: None,
         });
         assert!(status.is_ok());
         let router = api.router(ORIGIN);
@@ -929,6 +1278,10 @@ mod tests {
             );
         }
         let (parts, _) = send(Method::GET, "/__roves/steam/x", ok, b"");
+        assert_eq!(parts.status, StatusCode::NOT_FOUND);
+        let (parts, body) = send(Method::GET, "/__roves/steam/is_available", ok, b"");
+        assert_eq!((parts.status, body.as_str()), (StatusCode::OK, "false"));
+        let (parts, _) = send(Method::GET, "/__roves/nope/x", ok, b"");
         assert_eq!(parts.status, StatusCode::NOT_FOUND);
         let (parts, _) = send(Method::GET, "/__roves/saves/a/b", ok, b"");
         assert_eq!(parts.status, StatusCode::NOT_FOUND);

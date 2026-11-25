@@ -1046,13 +1046,13 @@ runs (dialog "already running", exit 6, first copy unaffected).
 
 ## Host API (`/__roves/`, implemented 2026-11-25, not yet run in CI)
 
-Games call the player through `@drincs/roves-api` (`core`, `saves`). The Servo shell served
+Games call the player through `@drincs/roves-api` (`core`, `saves`, `steam`). The Servo shell served
 those calls on the custom schemes `roves:` and `saves:`; welding owns `CefApp` and the
 render-process handler, so registering schemes would need a welding fork (rejected). The
 player instead serves same-origin routes on the game's loopback server:
 `http://127.0.0.1:<port>/__roves/<module>/<cmd>` (`support/cef-window-probe/src/host_api.rs`,
-shared through `#[path]` with the macOS and Linux gates; modules are a name -> handler map,
-Steam is a later entry). A game directory must not contain a `__roves` folder: the prefix is
+shared through `#[path]` with the macOS and Linux gates; modules are a name -> handler map:
+`core`, `saves`, `steam`, section "Steam"). A game directory must not contain a `__roves` folder: the prefix is
 never served from the game files.
 
 - **Discovery:** every game-mode launch defines `window.__ROVES__ = Object.freeze({ transport:
@@ -1095,6 +1095,51 @@ never served from the game files.
   `host-api-fixture/` three times with one persistent profile (write + `exit`, read back after
   a restart + `exit`, then `curl` refusals for a foreign Host, a missing header, a foreign
   Origin and a preflight).
+
+## Steam (`steam` feature, off by default; implemented 2026-11-25, not yet run in CI)
+
+`cargo run --bin bundle -- <dir> --release --features steam` builds the player with
+`steamworks` =0.13.1 (steamworks-sys 0.13.0, the crates of the legacy Servo `steam` feature
+and of `support/steamworks-gate`; MIT/Apache-2.0, Steamworks SDK redistributables under
+Valve's terms). Without `--features`, the bundle binary keeps cef-rs' `build_bundle`; with
+it, it builds the cdylib with those features itself (cef-rs builds it without features),
+lays it out with cef-rs' `bundle` and copies steamworks-sys's `steam_api64.dll` (found
+through cargo's `build-script-executed` message) next to the executable. A Steam package
+ships that DLL next to `play.exe`.
+
+- **One client** (`src/steam.rs`): game mode only, before CEF and the wgpu device exist (the
+  Steam overlay hooks the renderer's device). App ID as Steam itself resolves it: the Steam
+  launch environment (`SteamAppId`), else a development `steam_appid.txt` next to the
+  executable (`Client::init_app`), else whatever `SteamAPI_Init` finds. Failure is never fatal:
+  one log line `steam unavailable reason=<kind> <detail>` (or `steam initialized
+  app_id=<id>`); no persona name or Steam ID is ever logged. `SteamAPI_RunCallbacks` runs
+  once per SDL main-loop turn; the client is dropped (`SteamAPI_Shutdown`, log `steam
+  shutdown complete`) before CEF shuts down, on every path where CEF was initialized.
+- **Delay-loaded DLL:** build.rs links `steam_api64.dll` with `/DELAYLOAD` (plus
+  `delayimp.lib`), so CEF's sandboxed child processes, which run the same `play.dll`, never
+  load it, and the player checks the file exists before the first Steamworks call.
+- **Host API `steam` module** (`host_api.rs`, platform-neutral: the Steamworks calls sit
+  behind its `SteamApi` trait, so the macOS/Linux gates build it without steamworks and answer
+  "unavailable"): the legacy `steam:` protocol's commands, query names and JSON
+  (`ports/servoshell/desktop/protocols/steam.rs` at git `27ca0811d6d`): `is_available`,
+  `get_player_name`, `get_app_id`, `is_achievement_unlocked{achievement_id}`,
+  `get_stat_int{name}`, `get_stat_float{name}`, `is_dlc_installed{app_id}` (`GET`), and
+  `unlock_achievement`/`clear_achievement` (each followed by `StoreStats`), `set_stat_int`,
+  `set_stat_float{name,value}`, `store_stats`, `open_overlay{dialog}`, `open_store{app_id?}`
+  (`POST`). Without the feature, without Steam or after shutdown every command answers the
+  legacy "unavailable" value (`false`, `0`, `0.0` or `null`); a missing or malformed argument
+  answers `400` (the legacy protocol failed the fetch). Steamworks calls run on the server's
+  blocking threads (`Client` is `Send + Sync`), serialized with the callback pump by one
+  mutex. roves-api `steam.ts` uses these routes when `__ROVES__` is the HTTP marker.
+- **CI evidence (emulation only):** the workflow builds the Steam variant and runs it with the
+  pinned, SHA-256-checked Goldberg/GSE Windows release (`emu-win-release-vs22.7z`,
+  `release-2026_09_27`, LGPL-3.0) in place of `steam_api64.dll`, offline, App ID 480, with
+  `ACH_WIN_ONE_GAME` and the int stat `NumGames` declared in its `steam_settings`: the fixture
+  must see `is_available` true, `get_app_id` 480, unlock/unlocked/set/stat/store true/3. It
+  also checks the delay-load import and the shutdown order. The plain package must answer
+  `steam available=false`. None of this is evidence about the real Steam client, the overlay,
+  ownership or Steam Cloud: the real-Steam smoke stays manual (`support/steamworks-gate`
+  README).
 
 ## Local MCP bridge (optional, off by default; implemented 2026-11-24, fixture gate passed in CI)
 

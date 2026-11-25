@@ -481,7 +481,7 @@ jobs:
               echo "::error::could not hold the profile lock: $(cat "$out/lock-holder.log")"; failed=1
             fi
             kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
-            perl -MIO::Socket::INET -e '$| = 1; IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => shift, Proto => "tcp", Listen => 1, ReuseAddr => 1) or die "listen: $!"; print "listening\n"; sleep 60' \
+            perl -MIO::Socket::INET -e '$| = 1; my $socket = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => shift, Proto => "tcp", Listen => 1, ReuseAddr => 1) or die "listen: $!"; print "listening\n"; sleep 60' \
               "$port" > "$out/port-holder.log" 2>&1 &
             holder=$!
             for _ in $(seq 50); do grep -q listening "$out/port-holder.log" && break; sleep 0.2; done

@@ -1673,6 +1673,8 @@ jobs:
             'page markers registered identifier=\S+ mcp=false',
             'roves-host-api system_info os_type=windows arch=x86_64 engine=roves-cef-player cef-',
             'roves-host-api phase=1 write=true read=hello-roves',
+            # Built without the `steam` feature: the steam module answers "unavailable".
+            'roves-host-api steam available=false',
             'close requested by the game command=exit')
           if (-not (Test-Path -LiteralPath (Join-Path $root 'saves\ci-slot.save'))) { Write-Output '::error::saves\ci-slot.save missing after launch 1'; $failed = $true }
           $second = Start-Player 'second' 60000
@@ -1708,6 +1710,126 @@ jobs:
           Wait-Player $third 120
           Require $third @('roves-host-api phase=3 read=hello-roves staying')
           if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
+          if ($failed) { exit 1 }
+      # `steam` feature (README "Steam"): the same player built with --features steam into its
+      # own bundle folder (the plain bundle and package above are already laid out and stay
+      # Steam-free). The bundle binary copies steamworks-sys's steam_api64.dll next to the exe.
+      - name: build and bundle the Steam variant (release, --features steam)
+        id: steam_bundle
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: bash
+        working-directory: support/cef-netrender-probe
+        run: |
+          cargo run --locked --release --bin bundle -- "$RUNNER_TEMP/cef-nr-bundle-steam" --release --features steam \
+            2>&1 | tee "$RUNNER_TEMP/cef-nr-steam-build.log"
+          test -f "$RUNNER_TEMP/cef-nr-bundle-steam/roves_cef_netrender_probe.dll"
+          test -f "$RUNNER_TEMP/cef-nr-bundle-steam/steam_api64.dll"
+      # Steam variant under EMULATION, never evidence about the real Steam client: the pinned,
+      # SHA-256-checked Goldberg/GSE Windows release (gbe_fork, LGPL-3.0, same tag as
+      # steamworks-gate.yml's Linux job; digest as published by GitHub for the asset) replaces
+      # steam_api64.dll offline with Valve's public test App ID 480. A throw-away package (the
+      # plain package with the Steam variant's play.dll, the host-api-fixture game and a fresh
+      # persistent profile) launches once: the fixture calls steam is_available -> true,
+      # get_app_id -> 480, unlock/is_unlocked ACH_WIN_ONE_GAME, set/get stat NumGames, store_stats
+      # (ids declared in the emulator's steam_settings), then core/exit. Also gated: play.dll
+      # delay-loads steam_api64.dll (CEF's sandboxed children never load it) and Steamworks
+      # shuts down before CEF.
+      - name: Steam variant under the GSE emulator (emulation, WARP)
+        if: (success() || failure()) && steps.steam_bundle.outcome == 'success'
+        shell: pwsh
+        env:
+          GSE_TAG: release-2026_09_27
+          GSE_ASSET: emu-win-release-vs22.7z
+          GSE_SHA256: 300186c34f49a9ea75b33ce2af299267cc1dad0225cf45e81a229578d4e11c85
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'cef-steam-emulation'
+          if (Test-Path -LiteralPath $out) { Write-Output "::error::$out already exists"; exit 1 }
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $archive = Join-Path $out $env:GSE_ASSET
+          & curl.exe -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o $archive "https://github.com/Detanup01/gbe_fork/releases/download/$env:GSE_TAG/$env:GSE_ASSET"
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::download of $env:GSE_ASSET failed"; exit 1 }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($hash -ne $env:GSE_SHA256) { Write-Output "::error::$env:GSE_ASSET sha256 $hash != $env:GSE_SHA256"; exit 1 }
+          $gse = Join-Path $out 'gse'
+          & 7z x -y "-o$gse" $archive | Out-Null
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::7z exit $LASTEXITCODE"; exit 1 }
+          $emu = Get-ChildItem -LiteralPath $gse -Recurse -File -Filter 'steam_api64.dll' | Where-Object { $_.FullName -match '\\regular\\x64\\' } | Select-Object -First 1
+          $gen = Get-ChildItem -LiteralPath $gse -Recurse -File -Filter 'generate_interfaces*x64*.exe' | Select-Object -First 1
+          if (-not $emu -or -not $gen) {
+            Write-Output "::error::regular\x64\steam_api64.dll or generate_interfaces x64 not found in $env:GSE_ASSET"
+            Get-ChildItem -LiteralPath $gse -Recurse -Depth 3 | ForEach-Object { $_.FullName.Substring($gse.Length) }
+            exit 1
+          }
+          $failed = $false
+          $bundle = Join-Path $env:RUNNER_TEMP 'cef-nr-bundle-steam'
+          $real = Join-Path $bundle 'steam_api64.dll'
+          $dll = Join-Path $bundle 'roves_cef_netrender_probe.dll'
+          # Delay-load gate: steam_api64.dll only in play.dll's delay-load imports.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          $delay = $false; $delayed = $false; $direct = $false
+          foreach ($line in (& $dumpbin /nologo /dependents $dll)) {
+            if ($line -match 'following delay load dependencies') { $delay = $true }
+            elseif ($line -match '^\s{4}steam_api64\.dll\s*$') { if ($delay) { $delayed = $true } else { $direct = $true } }
+          }
+          if ($direct -or -not $delayed) { Write-Output "::error::steam_api64.dll import delay=$delayed direct=$direct (expected delay-load only)"; $failed = $true }
+          else { Write-Output '::notice::play.dll (steam) delay-loads steam_api64.dll' }
+          # steam_interfaces.txt from the redistributable the player links (steamworks-sys 0.13.0).
+          $work = Join-Path $out 'interfaces'
+          New-Item -ItemType Directory -Force $work | Out-Null
+          Copy-Item -LiteralPath $real -Destination $work
+          Copy-Item -LiteralPath $gen.FullName -Destination $work
+          Push-Location $work
+          & (Join-Path $work $gen.Name) 'steam_api64.dll' | Out-Null
+          Pop-Location
+          if (-not (Test-Path -LiteralPath (Join-Path $work 'steam_interfaces.txt'))) { Write-Output '::error::steam_interfaces.txt not generated'; exit 1 }
+          # Throw-away package: plain package + Steam play.dll + emulator + fixture game.
+          $pkg = Join-Path $out 'package'
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+          Get-ChildItem -LiteralPath '${{ steps.package.outputs.dir }}' -Force | Where-Object Name -ne 'game' | Copy-Item -Destination $pkg -Recurse
+          Copy-Item -LiteralPath 'support/cef-netrender-probe/host-api-fixture' -Destination (Join-Path $pkg 'game') -Recurse
+          Copy-Item -LiteralPath $dll -Destination (Join-Path $pkg 'play.dll') -Force
+          Copy-Item -LiteralPath $emu.FullName -Destination (Join-Path $pkg 'steam_api64.dll')
+          if ((Get-FileHash -LiteralPath $real).Hash -eq (Get-FileHash -LiteralPath (Join-Path $pkg 'steam_api64.dll')).Hash) { Write-Output '::error::emulator equals the redistributable'; exit 1 }
+          $settings = Join-Path $pkg 'steam_settings'
+          New-Item -ItemType Directory -Force $settings | Out-Null
+          Copy-Item -LiteralPath (Join-Path $work 'steam_interfaces.txt') -Destination $settings
+          # Valve's public test app: next to play.exe (the player's dev convention) and in
+          # steam_settings (the emulator's). The emulator stays offline.
+          Set-Content -LiteralPath (Join-Path $pkg 'steam_appid.txt') -Value '480' -NoNewline
+          Set-Content -LiteralPath (Join-Path $settings 'steam_appid.txt') -Value '480' -NoNewline
+          Set-Content -LiteralPath (Join-Path $settings 'configs.main.ini') -Value "[main::connectivity]`ndisable_networking=1`n"
+          Set-Content -LiteralPath (Join-Path $settings 'achievements.json') -Value '[{"name":"ACH_WIN_ONE_GAME","displayName":"Winner","description":"CI","hidden":"0","icon":"","icongray":""}]'
+          Set-Content -LiteralPath (Join-Path $settings 'stats.json') -Value '[{"name":"NumGames","type":"int","default":"0","global":"0"}]'
+          Write-Output "::notice::emulation package: GSE $env:GSE_TAG regular\x64 steam_api64.dll sha256 $((Get-FileHash -LiteralPath $emu.FullName).Hash.Substring(0, 16)); redistributable $((Get-FileHash -LiteralPath $real).Hash.Substring(0, 16))"
+          if (Get-Process play -ErrorAction SilentlyContinue) {
+            Get-Process play -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+          }
+          $log = Join-Path $out 'steam-emulation.log'
+          $arguments = @('--roves-no-error-dialog', "--roves-cache-dir=$(Join-Path $out 'profile')", '--roves-timeout-ms=60000',
+            '--roves-auto-close-ms=60000', "--roves-log=$log", "--log-file=$(Join-Path $out 'steam-emulation-cef-debug.log')")
+          $p = Start-Process -FilePath (Join-Path $pkg 'play.exe') -ArgumentList $arguments -WorkingDirectory $out -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(120000)) { Get-Process play -ErrorAction SilentlyContinue | Stop-Process -Force; $code = -1 } else { $code = $p.ExitCode }
+          Start-Sleep -Seconds 2
+          $lines = if (Test-Path -LiteralPath $log) { @(Get-Content -LiteralPath $log) } else { @() }
+          $lines | ForEach-Object { Write-Host "  [steam-emulation] $_" }
+          if ($code -notin @(0, 2)) { Write-Output "::error::steam emulation run: exit $code (expected 0 or 2)"; $failed = $true }
+          foreach ($bad in @(' FAIL ', 'roves-host-api (error|marker missing)', 'steam unavailable')) {
+            $hit = $lines | Select-String -Pattern $bad | Select-Object -First 1
+            if ($hit) { Write-Output "::error::steam emulation run: $($hit.Line)"; $failed = $true }
+          }
+          foreach ($pattern in @('steam initialized app_id=480$',
+              'roves-host-api steam available=true app_id=480 unlock=true unlocked=true set=true stat=3 store=true$',
+              'close requested by the game command=exit', 'steam shutdown complete', 'cef shutdown complete')) {
+            if (-not ($lines | Select-String -Pattern $pattern)) { Write-Output "::error::steam emulation run: missing $pattern"; $failed = $true }
+          }
+          $steamDown = ($lines | Select-String -Pattern 'steam shutdown complete' | Select-Object -First 1).LineNumber
+          $cefDown = ($lines | Select-String -Pattern 'cef shutdown complete' | Select-Object -First 1).LineNumber
+          if ($steamDown -and $cefDown -and $steamDown -gt $cefDown) { Write-Output '::error::Steamworks shut down after CEF'; $failed = $true }
+          if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
+          if (-not $failed) { Write-Output "::notice::Steam host API verified under EMULATION (GSE $env:GSE_TAG, App ID 480), not against the real Steam client" }
           if ($failed) { exit 1 }
       # Local MCP bridge (README "Local MCP bridge"). Assembled on every run for the fixture
       # gate below, in its own temporary folder: the plain package uploaded to users is not
@@ -1909,6 +2031,8 @@ jobs:
             ${{ runner.temp }}/cef-vn-player-run/startup-screen.png
             ${{ runner.temp }}/cef-vn-player-run/refused-*.stderr.txt
             ${{ runner.temp }}/cef-host-api/*.log
+            ${{ runner.temp }}/cef-steam-emulation/*.log
+            ${{ runner.temp }}/cef-nr-steam-build.log
             ${{ runner.temp }}/vnt-npm-ci.log
             ${{ runner.temp }}/vnt-build.log
             ${{ runner.temp }}/vnt-build-info.txt

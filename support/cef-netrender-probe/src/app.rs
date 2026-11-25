@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::game::host_api::SteamHandle;
 use crate::game::{Console, GameOptions, Input, Server};
 use crate::game_rules::{
     ClickAction, ClickInput, ClickTest, CycleAction, KeyAction, KeyInput, KeyTest, Milestone,
@@ -215,8 +216,11 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     // host API (README "Host API") is served on the same origin; its `exit` reaches the main
     // loop through `game_exit`.
     let game_exit = Arc::new(OnceLock::<&'static str>::new());
+    // `steam` feature, game mode: the run's one Steamworks client (README "Steam"), before
+    // CEF and the wgpu device exist; dropped before CEF shuts down (`shutdown_steam`).
+    let steam = start_steam(&log, &options, &cef_path);
     let server = match options.game.as_ref() {
-        Some(game) => match start_game_server(&log, &options, game, &game_exit) {
+        Some(game) => match start_game_server(&log, &options, game, &game_exit, steam.clone()) {
             Ok(server) => {
                 log.line(format_args!(
                     "game loopback origin={} game-dir={} profile-dir={} browser_pid={}",
@@ -295,6 +299,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         Ok(runtime) => runtime,
         Err(error) => {
             log.line(format_args!("cef initialize failed: {error}"));
+            shutdown_steam(&log, steam.as_deref());
             stop_server(&log, server);
             cleanup(&log);
             return 4;
@@ -319,6 +324,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         Ok(parts) => parts,
         Err(error) => {
             log.line(format_args!("SDL3 startup failed: {error}"));
+            shutdown_steam(&log, steam.as_deref());
             drop(runtime);
             stop_server(&log, server);
             cleanup(&log);
@@ -371,6 +377,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         bootstrap: None,
         page_init: None,
         game_exit,
+        steam,
     };
     probe.start_mcp();
     match probe.start(&video) {
@@ -403,6 +410,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
                 probe.devtools_step();
                 probe.mcp_step();
                 probe.game_exit_step();
+                probe.steam_step();
                 probe.report_startup_failure();
             }
         },
@@ -453,6 +461,7 @@ fn start_game_server(
     options: &Options,
     game: &GameOptions,
     game_exit: &Arc<OnceLock<&'static str>>,
+    steam: Option<Arc<SteamHandle>>,
 ) -> std::io::Result<Server> {
     use crate::game::host_api::{HostApi, HostConfig};
     let exit = game_exit.clone();
@@ -465,12 +474,44 @@ fn start_game_server(
         request_exit: Arc::new(move |cmd| {
             let _ = exit.set(cmd);
         }),
+        steam,
     });
     match saves {
         Ok(dir) => log.line(format_args!("host api saves dir={}", dir.display())),
         Err(reason) => log.line(format_args!("host api saves unavailable reason={reason}")),
     }
     crate::game::server::start_with(&game.dir, game.port, |origin| api.router(origin))
+}
+
+/// `steam` feature, game mode only: Steamworks for the host API's `steam` module. Steam
+/// missing or not running is never fatal: one log line (no persona name or Steam ID), and the
+/// module answers "unavailable".
+#[cfg(feature = "steam")]
+fn start_steam(log: &Log, options: &Options, exe_dir: &Path) -> Option<Arc<SteamHandle>> {
+    options.game.as_ref()?;
+    match crate::steam::init(exe_dir) {
+        Ok((handle, app_id)) => {
+            log.line(format_args!("steam initialized app_id={app_id}"));
+            Some(handle)
+        },
+        Err(reason) => {
+            log.line(format_args!("steam unavailable reason={reason}"));
+            None
+        },
+    }
+}
+
+/// Without the `steam` feature the host API's `steam` module answers "unavailable".
+#[cfg(not(feature = "steam"))]
+fn start_steam(_: &Log, _: &Options, _: &Path) -> Option<Arc<SteamHandle>> {
+    None
+}
+
+/// Drops the Steamworks client (`SteamAPI_Shutdown`); called before CEF shuts down.
+fn shutdown_steam(log: &Log, steam: Option<&SteamHandle>) {
+    if steam.is_some_and(SteamHandle::shutdown) {
+        log.line(format_args!("steam shutdown complete"));
+    }
 }
 
 /// The page marker script for the game origin (`None` in fixture mode).
@@ -1109,6 +1150,9 @@ struct Probe {
     /// Set by the host API's `exit`/`clear_content_cache` (server thread); the main loop then
     /// closes through the same path as an OS close request.
     game_exit: Arc<OnceLock<&'static str>>,
+    /// `steam` feature, game mode, Steam running: the Steamworks client shared with the host
+    /// API; callbacks run once per loop turn, shut down first in `finish`.
+    steam: Option<Arc<SteamHandle>>,
 }
 
 /// The `about:blank` document that precedes the game while the page marker script is
@@ -2823,6 +2867,8 @@ impl Probe {
 
     fn finish(&mut self) -> i32 {
         self.stop_mcp();
+        // Steamworks first: no Steam call outlives CEF (README "Steam").
+        shutdown_steam(&self.log, self.steam.take().as_deref());
         if let Some(s) = self.state.take() {
             // Drain the shared queue before dropping the device's last owners.
             let _ = s.host.device.poll(wgpu::PollType::wait_indefinitely());
@@ -3015,6 +3061,13 @@ impl Probe {
                     self.fail_startup(StartupFailure::LoadError);
                 },
             }
+        }
+    }
+
+    /// One loop turn of Steamworks callback dispatch (`SteamAPI_RunCallbacks`).
+    fn steam_step(&self) {
+        if let Some(steam) = self.steam.as_deref() {
+            steam.with(|api| api.run_callbacks());
         }
     }
 

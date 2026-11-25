@@ -20,6 +20,8 @@ mod page_init;
 mod splash;
 #[cfg(windows)]
 mod stall;
+#[cfg(all(windows, feature = "steam"))]
+mod steam;
 #[cfg(windows)]
 mod timings;
 

@@ -1,3 +1,25 @@
+## 2026-11-25 - Windows CEF player: optional `steam` feature behind the host API
+
+Added: `support/cef-netrender-probe/src/steam.rs`. Changed: the Windows player (`Cargo.toml`
+feature `steam` + optional `steamworks =0.13.1`, `Cargo.lock` adds steamworks, steamworks-sys
+0.13.0 and paste with the checksums of the legacy Servo shell and `support/steamworks-gate`;
+`build.rs`, `lib.rs`, `app.rs`, `src/bin/bundle.rs`, `host-api-fixture/main.js`, README
+"Steam"), `support/cef-window-probe/src/host_api.rs`, both gates' `HostConfig` (`steam:
+None`), `support/cef-host-api-tests` and `.github/workflows/cef-netrender-probe.yml`. The CEF
+player had no Steam at all; the legacy `steam:` scheme cannot be registered (welding owns
+`CefApp`). Now the host API map gains a `steam` module with the legacy commands, query names
+and JSON (reads `GET`, mutations and overlay `POST`); it reaches Steamworks only through a
+`SteamApi` trait, so the gates build it without steamworks and answer "unavailable". With
+`--features steam` the player owns one steamworks-rs `Client` (game mode, before CEF; App ID
+from the Steam environment or a dev `steam_appid.txt` next to the exe; failure logged once,
+never fatal, no persona data), pumps callbacks from the SDL loop and drops it before CEF
+shutdown. `steam_api64.dll` is delay-loaded so CEF's sandboxed children never load it. The
+bundle binary gains `--features` (cef-rs builds the cdylib without features) and copies the
+redistributable next to the exe. CI builds the Steam variant and runs it against the pinned
+GSE Windows emulator (`emu-win-release-vs22.7z`, SHA-256 checked), labelled emulation only;
+the plain package must answer `steam available=false`. roves-api `steam.ts` uses the HTTP
+routes when `__ROVES__` is the CEF marker. Off by default: no user-facing package changes.
+
 ## 2026-11-25 - CEF players: roves-api host API on the loopback origin (core + saves)
 
 Added: `support/cef-window-probe/src/host_api.rs`, `support/cef-netrender-probe/src/page_init.rs`,
@@ -20,16 +42,14 @@ the CDP document-start path that previously ran only with the MCP bridge, so eve
 starts on `about:blank` first; log lines renamed to `page markers ...`. The gates serve the
 routes and close on `exit`, but have no DevTools channel, so no page marker there yet.
 
-## 2026-11-25 - CEF loopback server: refuse a live listener on the stored port
+## 2026-11-25 - CEF gates: the busy-port check really holds the port
 
-Changed: `support/cef-window-probe/src/server.rs` (shared by the Windows player and the macOS
-and Linux gates through `#[path]`). CI run 45623549062 showed the macOS player binding the
-stored origin port while a `SO_REUSEADDR` listener already held it: Darwin accepts the
-duplicate bind when both sockets set the option (Rust's std always does on Unix, to rebind
-past TIME_WAIT), so the game could share its saves' origin with another app. A fixed port is now
-first probed with a 250 ms loopback connect; an answer is reported as `AddrInUse`
-(exit 6, "port busy"), TIME_WAIT leftovers do not answer and still rebind. Linux accepted
-the duplicate bind as well (CI run 45645159198), so the probe now runs on every platform.
+Changed: `.github/workflows/cef-{macos,linux}-gate.yml`. The busy-port contention check
+created its listener with `IO::Socket::INET->new(...) or die` without keeping the object, so
+Perl closed the socket at once and the player found the port free (CI runs 45623549062,
+45645159198, 45664426022, 45664425791). The holder now keeps the socket in a variable. A
+connect probe briefly added to `support/cef-window-probe/src/server.rs` on the wrong diagnosis
+(duplicate `SO_REUSEADDR` bind) is removed again; the server is unchanged.
 
 ## 2026-11-25 - CEF + SDL3 + wgpu candidate: Linux packaged-game slice (experiment only)
 

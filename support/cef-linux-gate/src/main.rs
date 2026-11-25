@@ -35,9 +35,9 @@
 #[path = "../../cef-netrender-probe/src/game_rules.rs"]
 mod game_rules;
 /// The players' shared host API (`/__roves/<module>/<cmd>` on the loopback origin; Windows
-/// player README "Host API"): `core` and `saves`. The `window.__ROVES__` page marker is not
-/// injected here (no DevTools channel in the gates), so `isAvailable()` of roves-api stays
-/// `false`; the routes answer direct calls.
+/// player README "Host API"): `core`, `saves` and `steam` (always "unavailable" here). The
+/// `window.__ROVES__` page marker is not injected here (no DevTools channel in the gates), so
+/// `isAvailable()` of roves-api stays `false`; the routes answer direct calls.
 #[cfg(target_os = "linux")]
 #[path = "../../cef-window-probe/src/host_api.rs"]
 mod host_api;
@@ -328,6 +328,8 @@ mod gate {
                 request_exit: std::sync::Arc::new(move |cmd| {
                     let _ = exit.set(cmd);
                 }),
+                // Steam is a Windows player feature only (README "Steam").
+                steam: None,
             });
             match saves {
                 Ok(dir) => println!("gate: host api saves dir={}", dir.display()),

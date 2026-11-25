@@ -4,16 +4,22 @@
 //   2. save found   -> log it, write "ci-stay", core/exit;
 //   3. both found   -> log, stay open so the runner can probe the routes with curl.
 // Every step is one console line `roves-host-api ...` that the workflow checks in the log.
+// Every launch also logs `steam available=<bool>`; with Steam (the `steam` feature package
+// under the CI's GSE emulator, App ID 480) it then exercises the achievement and stat
+// commands on the ids declared in the emulator's steam_settings (README "Steam").
 const host = window.__ROVES__;
 const log = (line) => {
   console.log(`roves-host-api ${line}`);
   document.getElementById("status").textContent = line;
 };
 
-async function call(module, cmd, { key, body } = {}) {
-  const query = key === undefined ? "" : `?key=${encodeURIComponent(key)}`;
+const MUTATING = ["write", "delete", "clear", "exit", "unlock_achievement", "set_stat_int", "store_stats"];
+
+async function call(module, cmd, { key, body, args } = {}) {
+  const params = new URLSearchParams(key === undefined ? args : { key });
+  const query = params.size ? `?${params}` : "";
   const response = await fetch(`${host.api}${module}/${cmd}${query}`, {
-    method: body !== undefined || ["write", "delete", "clear", "exit"].includes(cmd) ? "POST" : "GET",
+    method: body !== undefined || MUTATING.includes(cmd) ? "POST" : "GET",
     headers: { "X-Roves-Api": "1" },
     body,
   });
@@ -36,6 +42,23 @@ async function exit() {
   await call("core", "exit");
 }
 
+// Steam commands of roves-api's steam.ts; ids from the CI emulator's steam_settings.
+async function steam() {
+  const available = await call("steam", "is_available");
+  if (!available) {
+    log("steam available=false");
+    return;
+  }
+  const appId = await call("steam", "get_app_id");
+  const achievement_id = "ACH_WIN_ONE_GAME";
+  const unlock = await call("steam", "unlock_achievement", { args: { achievement_id } });
+  const unlocked = await call("steam", "is_achievement_unlocked", { args: { achievement_id } });
+  const set = await call("steam", "set_stat_int", { args: { name: "NumGames", value: 3 } });
+  const stat = await call("steam", "get_stat_int", { args: { name: "NumGames" } });
+  const store = await call("steam", "store_stats");
+  log(`steam available=true app_id=${appId} unlock=${unlock} unlocked=${unlocked} set=${set} stat=${stat} store=${store}`);
+}
+
 async function run() {
   if (!host || host.transport !== "http" || !Object.isFrozen(host)) {
     log("marker missing");
@@ -43,6 +66,7 @@ async function run() {
   }
   const info = await call("core", "system_info");
   log(`system_info os_type=${info.os_type} arch=${info.architecture} engine=${info.engine_version}`);
+  await steam();
   if (!(await call("saves", "is_available"))) {
     log("saves unavailable");
     return;

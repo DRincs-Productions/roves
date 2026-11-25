@@ -59,7 +59,6 @@ pub fn start_with(
     port: u16,
     routes: impl FnOnce(&str) -> Router,
 ) -> io::Result<Server> {
-    refuse_live_listener(port)?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
     listener.set_nonblocking(true)?;
     let origin = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
@@ -98,30 +97,6 @@ impl Server {
         self.thread
             .join()
             .map_err(|_| io::Error::other("loopback server thread panicked"))?
-    }
-}
-
-/// The standard library sets `SO_REUSEADDR` on Unix listeners (needed to rebind the stored
-/// origin port while old connections sit in TIME_WAIT). Darwin then also accepts a second
-/// listener on the exact same address when the first one set `SO_REUSEADDR` too, so the
-/// player could share the saves' origin with another app (CI run 45623549062); Linux
-/// accepted it too (CI run 45645159198). A live listener answers a loopback connect;
-/// TIME_WAIT leftovers do not. Cheap, so it runs on every platform.
-fn refuse_live_listener(port: u16) -> io::Result<()> {
-    use std::{
-        net::{SocketAddr, TcpStream},
-        time::Duration,
-    };
-    if port == 0 {
-        return Ok(());
-    }
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    match TcpStream::connect_timeout(&addr, Duration::from_millis(250)) {
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::AddrInUse,
-            format!("another process is listening on 127.0.0.1:{port}"),
-        )),
-        Err(_) => Ok(()),
     }
 }
 

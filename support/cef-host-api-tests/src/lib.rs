@@ -53,6 +53,7 @@ mod end_to_end {
                 saves_dir: Some(profile.join("saves")),
                 engine_version: "e2e".into(),
                 request_exit: Arc::new(|_| {}),
+                steam: None,
             });
             assert!(saves.is_ok());
             server::start_with(&fixture, 0, |origin| api.router(origin)).unwrap()
