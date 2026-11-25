@@ -10,7 +10,9 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 macOS feasibility gate
 # build of DRincs-Productions/visual-novel-template (pinned, as the Windows package) under
 # Contents/Resources/game and runs it once from the shared loopback server: accepted
 # load-end, first frame after it, test close through SDL's quit event, OnBeforeClose,
-# CEF shutdown, server stop (README "Packaged game"). Separate from cef-netrender-probe.yml
+# CEF shutdown, server stop (README "Packaged game"), first with --roves-isolated-profile,
+# then twice with the persistent per-install profile (same origin across launches) and under
+# contention (README "Saves and the player profile"). Separate from cef-netrender-probe.yml
 # (Windows, unchanged). Never gates a release.
 
 on:
@@ -19,6 +21,8 @@ on:
       - 'support/cef-macos-gate/**'
       # Compiled into the gate through `#[path]` (packaged-game mode).
       - 'support/cef-window-probe/src/server.rs'
+      # The Windows player's pure rules (origin, load status, profile name/files), `#[path]`.
+      - 'support/cef-netrender-probe/src/game_rules.rs'
       - '.github/workflows/cef-macos-gate.yml'
   workflow_dispatch:
 
@@ -44,6 +48,7 @@ jobs:
           sparse-checkout: |
             support/cef-macos-gate
             support/cef-window-probe/src
+            support/cef-netrender-probe/src
           sparse-checkout-cone-mode: true
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -220,7 +225,7 @@ jobs:
           ROVES_GATE_TIMEOUT_SECS=60 ROVES_GATE_AUTO_CLOSE_MS=8000 \
             ROVES_GATE_FRAME_DUMP="$RUNNER_TEMP/player-last-frame.bmp" \
             perl -e 'alarm shift; exec @ARGV' 150 \
-            "$APP/Contents/MacOS/roves-cef-macos-gate" > "$log" 2>&1
+            "$APP/Contents/MacOS/roves-cef-macos-gate" --roves-isolated-profile > "$log" 2>&1
           code=$?
           set -e
           grep '^gate:' "$log" | grep -v '^gate: console ' || true
@@ -231,13 +236,14 @@ jobs:
           o="${origin//./\\.}"
           if [ "$code" = 2 ] && [ "${FIXTURE_CODE:-}" = 2 ]; then
             # Same runner without accelerated frames: load and close only.
-            expected=("^gate: load-end status=200 url=$o/ ok=true$" '^gate: NO_ACCELERATED_FRAME'
-              '^gate: browser closed elapsed_ms=' '^gate: cef shutdown complete$' '^gate: loopback stopped$'
-              '^gate: shutdown complete exit=2$')
+            expected=('^gate: player profile=isolated cache=' "^gate: load-end status=200 url=$o/ ok=true$"
+              '^gate: NO_ACCELERATED_FRAME' '^gate: browser closed elapsed_ms=' '^gate: cef shutdown complete$'
+              '^gate: loopback stopped$' '^gate: cache removed$' '^gate: shutdown complete exit=2$' '^gate: exit code=2$')
             echo "::notice::no accelerated frame on this runner (fixture and player exit 2): load and close verified, first frame not"
           else
             test "$code" = 0 || { echo "::error::player exit $code (expected 0)"; failed=1; }
-            expected=('^gate: cef initialized sandbox=Sandboxed' '^gate: adapter .*backend=Metal'
+            expected=('^gate: player profile=isolated cache=' '^gate: cef initialized sandbox=Sandboxed'
+              '^gate: adapter .*backend=Metal' '^gate: game profile ready dir=.*/game-profile elapsed_ms='
               "^gate: producer created mode=AcceleratedPaint size=[0-9]+x[0-9]+ url=$o/$"
               "^gate: load-end status=200 url=$o/ ok=true$" '^gate: game loaded elapsed_ms='
               '^gate: fresh frame requested ok=true$'
@@ -247,7 +253,7 @@ jobs:
               '^gate: last game frame size=' '^gate: frame dump written ' '^gate: PASS sandbox renderers='
               '^gate: PASS packaged game loaded' '^gate: browser closed elapsed_ms='
               '^gate: cef shutdown complete$' '^gate: loopback stopped$' '^gate: cache removed$'
-              '^gate: shutdown complete exit=0$')
+              '^gate: shutdown complete exit=0$' '^gate: exit code=0$')
           fi
           # In order: each pattern must match a line after the previous match.
           last=0
@@ -257,6 +263,9 @@ jobs:
           done
           # No remote-debugging/DevTools endpoint: the player must not rely on one.
           if grep -q 'DevTools listening' "$log"; then echo "::error::a DevTools endpoint was opened"; failed=1; fi
+          if grep -q -E '^gate: player (profile root=|origin-port stored|profile kept)' "$log"; then
+            echo "::error::the isolated launch touched a persistent profile"; failed=1
+          fi
           cache="$(sed -n 's|^gate: cef initialized sandbox=Sandboxed cache=||p' "$log" | head -1)"
           if [ -n "$cache" ] && [ -e "$cache" ]; then echo "::error::CEF cache left behind: $cache"; failed=1; fi
           if nc -z 127.0.0.1 "${origin##*:}" 2>/dev/null; then echo "::error::loopback port still accepting after exit"; failed=1; fi
@@ -264,6 +273,130 @@ jobs:
             | while read -r line; do echo "::notice::$line"; done || true
           sleep 2
           if pgrep -fl "roves-cef-macos-gate" ; then echo "::error::player processes still running after exit"; failed=1; fi
+          test "$failed" = 0
+      # Ordinary launch (no --roves-isolated-profile), README "Saves and the player profile":
+      # the persistent profile under ~/Library/Application Support/Roves/Player/<name> and its
+      # stored origin port. Two sequential launches from an unrelated working directory must
+      # use the same profile and loopback origin (origin-keyed storage, so saves, survive) and
+      # keep the profile with its CEF directories; a lock held by another process and the
+      # stored port taken by another program must each end the run with exit 6 before CEF
+      # starts; a damaged port file must give exit 1 instead of a new origin. Mirrors the
+      # Windows package step. Saves written by a real game across launches stay a manual check.
+      - name: run the packaged game twice with the persistent profile, then under contention
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/player-profile"
+          base="$HOME/Library/Application Support/Roves/Player"
+          test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
+          mkdir -p "$out/unrelated-working-directory"
+          if [ -e "$base" ]; then echo "::error::$base exists before the first launch"; exit 1; fi
+          if pgrep -fl "roves-cef-macos-gate"; then echo "::error::gate processes left by a previous step"; exit 1; fi
+          failed=0
+          allowed=" 0 "; if [ "${FIXTURE_CODE:-}" = 2 ]; then allowed=" 0 2 "; fi
+          # run_player <name> <hard stop s>: sets $code; log in $out/<name>.log.
+          run_player() {
+            set +e
+            (cd "$out/unrelated-working-directory" && ROVES_GATE_TIMEOUT_SECS=60 ROVES_GATE_AUTO_CLOSE_MS=3000 \
+              perl -e 'alarm shift; exec @ARGV' "$2" "$APP/Contents/MacOS/roves-cef-macos-gate" > "$out/$1.log" 2>&1)
+            code=$?
+            set -e
+            grep '^gate:' "$out/$1.log" | grep -v '^gate: console ' | sed "s/^/  [$1] /" || true
+          }
+          ordered() { # ordered <log> <label> <pattern>...: each after the previous match
+            local log="$1" label="$2" last=0 at; shift 2
+            for pattern in "$@"; do
+              at="$(tail -n "+$((last + 1))" "$log" | grep -n -m1 -E -- "$pattern" | cut -d: -f1 || true)"
+              if [ -z "$at" ]; then echo "::error::$label: missing or out of order: $pattern"; failed=1; else last=$((last + at)); fi
+            done
+          }
+          absent() { # absent <log> <label> <pattern>...
+            local log="$1" label="$2"; shift 2
+            for pattern in "$@"; do
+              if grep -q -E -- "$pattern" "$log"; then echo "::error::$label: unexpected $(grep -m1 -E -- "$pattern" "$log")"; failed=1; fi
+            done
+          }
+          for name in first second; do
+            run_player "$name" 150
+            log="$out/$name.log"
+            case "$allowed" in *" $code "*) ;; *) echo "::error::$name persistent launch: exit $code (allowed:$allowed)"; failed=1 ;; esac
+            ordered "$log" "$name" '^gate: player profile root=.+ lock=acquired origin-port=(new|[0-9]+)$' \
+              '^gate: mode=packaged-game dir=.*/Contents/Resources/game origin=http://127\.0\.0\.1:[0-9]+$' \
+              '^gate: player profile=persistent cache=.+/cef$' '^gate: cef initialized sandbox=Sandboxed cache=.+/cef$' \
+              '^gate: game profile ready dir=.+/cef/game-profile elapsed_ms=' \
+              '^gate: load-end status=(200|304) url=http://127\.0\.0\.1:[0-9]+/ ok=true$' \
+              '^gate: browser closed elapsed_ms=' '^gate: cef shutdown complete$' '^gate: loopback stopped$' \
+              '^gate: player profile kept root=' "^gate: shutdown complete exit=$code$" "^gate: exit code=$code$"
+            absent "$log" "$name" '^gate: FAIL' '^gate: cache (not )?removed' 'DevTools listening'
+            sleep 2
+            if pgrep -fl "roves-cef-macos-gate"; then echo "::error::$name: processes still running after exit"; failed=1; fi
+          done
+          root="$(sed -n 's|^gate: player profile root=\(.*\) lock=acquired origin-port=new$|\1|p' "$out/first.log" | head -1)"
+          o1="$(sed -n 's|^gate: mode=packaged-game dir=.* origin=||p' "$out/first.log" | head -1)"
+          o2="$(sed -n 's|^gate: mode=packaged-game dir=.* origin=||p' "$out/second.log" | head -1)"
+          port="${o1##*:}"
+          echo "::notice::persistent origins: first=$o1 second=$o2 root=$root"
+          if ! [[ "$root" =~ ^"$base"/roves-cef-macos-gate-[0-9a-f]{16}$ ]]; then
+            echo "::error::first launch did not start a new profile at $base/roves-cef-macos-gate-<16 hex> (root '$root')"; failed=1
+          fi
+          if [ -z "$o1" ] || [ "$o1" != "$o2" ]; then echo "::error::the loopback origin changed between launches (saves would be lost)"; failed=1; fi
+          grep -q -x -F "gate: player origin-port stored port=$port" "$out/first.log" \
+            || { echo "::error::first launch did not store its origin port"; failed=1; }
+          grep -q -x -F "gate: player profile root=$root lock=acquired origin-port=$port" "$out/second.log" \
+            || { echo "::error::second launch did not reuse the stored profile and port"; failed=1; }
+          if grep -q '^gate: player origin-port stored' "$out/second.log"; then echo "::error::second launch rewrote the origin port"; failed=1; fi
+          if [ -n "$root" ] && [ -d "$root" ]; then
+            stored="$(tr -d '[:space:]' < "$root/origin-port" 2>/dev/null || true)"
+            test "$stored" = "$port" || { echo "::error::origin-port file holds '$stored', expected $port"; failed=1; }
+            for dir in cef cef/game-profile; do
+              test -d "$root/$dir" || { echo "::error::profile lacks $dir after exit"; failed=1; }
+            done
+            ls -A "$root" | while read -r entry; do echo "::notice::profile entry $entry"; done
+            ls -A "$root/cef/game-profile" 2>/dev/null | while read -r entry; do echo "::notice::game-profile entry $entry"; done || true
+          else
+            echo "::error::profile root missing after exit: '$root'"; failed=1
+          fi
+          # Contention: each case must end before CEF starts.
+          refused() { # refused <name> <expected exit> <pattern>...
+            local name="$1" expected="$2"; shift 2
+            run_player "$name" 60
+            echo "::notice::$name: exit=$code"
+            test "$code" = "$expected" || { echo "::error::$name: exit $code (expected $expected)"; failed=1; }
+            ordered "$out/$name.log" "$name" "$@" "^gate: exit code=$expected$"
+            absent "$out/$name.log" "$name" '^gate: cef initialized' '^gate: producer created'
+          }
+          if [ -n "$root" ] && [ -d "$root" ] && [ -n "$port" ]; then
+            # flock(2), the call std's File::try_lock makes on macOS.
+            perl -MFcntl=:flock -e '$| = 1; open(my $f, ">>", shift) or die "open: $!"; flock($f, LOCK_EX | LOCK_NB) or die "flock: $!"; print "locked\n"; sleep 60' \
+              "$root/player.lock" > "$out/lock-holder.log" 2>&1 &
+            holder=$!
+            for _ in $(seq 50); do grep -q locked "$out/lock-holder.log" && break; sleep 0.2; done
+            if grep -q locked "$out/lock-holder.log"; then
+              refused busy-profile 6 '^gate: FAIL player profile busy root='
+            else
+              echo "::error::could not hold the profile lock: $(cat "$out/lock-holder.log")"; failed=1
+            fi
+            kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+            perl -MIO::Socket::INET -e '$| = 1; IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => shift, Proto => "tcp", Listen => 1, ReuseAddr => 1) or die "listen: $!"; print "listening\n"; sleep 60' \
+              "$port" > "$out/port-holder.log" 2>&1 &
+            holder=$!
+            for _ in $(seq 50); do grep -q listening "$out/port-holder.log" && break; sleep 0.2; done
+            if grep -q listening "$out/port-holder.log"; then
+              refused busy-port 6 "^gate: player profile root=.+ lock=acquired origin-port=$port$" "^gate: FAIL game loopback port busy port=$port "
+            else
+              echo "::error::could not hold port $port: $(cat "$out/port-holder.log")"; failed=1
+            fi
+            kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+            printf 'not-a-port' > "$root/origin-port"
+            refused damaged-port-file 1 '^gate: FAIL player profile root=.+ is damaged'
+            printf '%s\n' "$port" > "$root/origin-port"
+          else
+            echo "::error::contention cases skipped: no profile root/origin"; failed=1
+          fi
+          sleep 2
+          if pgrep -fl "roves-cef-macos-gate"; then echo "::error::gate processes still running"; failed=1; fi
+          # Ephemeral runner, but leave no profile behind for later steps.
+          rm -rf "$base"
           test "$failed" = 0
       - name: zip the .app
         if: always() && env.APP != ''
@@ -278,6 +411,7 @@ jobs:
             ${{ runner.temp }}/gate-build.log
             ${{ runner.temp }}/gate-run.log
             ${{ runner.temp }}/player-run.log
+            ${{ runner.temp }}/player-profile/*.log
             ${{ runner.temp }}/player-last-frame.bmp
             ${{ runner.temp }}/player-game-sha256.txt
             ${{ runner.temp }}/vnt-build-info.txt

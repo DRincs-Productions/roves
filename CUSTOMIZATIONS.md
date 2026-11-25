@@ -95,6 +95,26 @@ the game without the marker); Page events are drained and dropped. (2) The disab
 only host lines starting with `roves-cef-nr mcp ` (none when off, exactly the `mcp
 unavailable` line when the bridge cannot start). Probe README updated. Local checks only.
 
+## 2026-11-25 - CEF + SDL3 + wgpu candidate: macOS persistent player profile (experiment only)
+
+Changed: `support/cef-macos-gate/{README.md,src/main.rs,src/player.rs}`, added
+`support/cef-macos-gate/src/profile.rs`, `.github/workflows/cef-macos-gate.yml`. The packaged
+macOS player now keeps a persistent per-install profile with a stable loopback origin, like
+the Windows player: root `~/Library/Application Support/Roves/Player/<exe stem>-<FNV-1a of the
+canonical .app path>` holding `player.lock` (`File::try_lock`, i.e. `flock`, one instance per
+profile), `origin-port` (stored after the first bind, reused afterwards) and CEF's root cache
+`cef/` with welding's on-disk context `cef/game-profile`. Busy profile or taken port -> exit 6,
+damaged port file -> exit 1, all before CEF starts. The rules are the Windows player's own
+`support/cef-netrender-probe/src/game_rules.rs`, compiled unchanged through `#[path]` (it also
+replaces the origin/load-status copies in `player.rs`); the Windows file is not modified. On
+macOS welding requires the asynchronous `prepare_profile`/`try_new_with_prepared_profile` path
+for an on-disk context, pumped from the player loop. `--roves-isolated-profile` keeps the
+previous per-run cache (used by the existing CI packaged run); every run now ends with
+`gate: exit code=<N>`. New CI step: two ordinary launches must reuse the same profile and
+origin, then busy-lock/busy-port/damaged-file refusals. App Translocation (quarantined app
+run in place) would give each launch a new profile: warned, documented. No input, dialogs,
+signing or Steam; Windows/Linux/Steamworks code and workflows unchanged; not user-facing.
+
 ## 2026-11-25 - CEF + SDL3 + wgpu candidate: macOS packaged-game slice (experiment only)
 
 Changed: `support/cef-macos-gate/{Cargo.toml,Cargo.lock,README.md,src/main.rs}`, added

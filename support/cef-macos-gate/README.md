@@ -3,8 +3,10 @@
 Status (2026-11-25): the fixture gate is **green in CI run 45575923557** (commit
 `fa9a52ce122`, `macos-15` arm64, macOS 15.8.2, Apple paravirtual GPU): exit 0, so CEF's
 accelerated IOSurface frames reached the wgpu Metal device on that runner with a sandboxed
-renderer. The **packaged-game slice** (section "Packaged game") is implemented and
-type-checked locally only; it has no CI result yet. No real Mac has run either mode.
+renderer. The **packaged-game slice** (section "Packaged game") was committed in
+`ecd635fea9f`; its CI result is pending. The **persistent-profile slice** (section "Saves and
+the player profile") is implemented and type-checked locally only, with no CI result yet. No
+real Mac has run either mode.
 
 First non-Windows step of the CEF + SDL3 + wgpu player (`support/cef-netrender-probe`,
 Windows only). It answers one question with the same maintained producer and renderer as
@@ -110,7 +112,8 @@ Added for the packaged-game slice (same revision, sparse paths added):
   quit path first closes every browser (`CloseAllBrowsersAndQuit`) and only then shuts down.
   The player follows the same order: SDL quit/window close -> `close_browser(force)` ->
   pump CEF until `OnBeforeClose` -> `cef::shutdown` -> stop the loopback server (after CEF,
-  so in-flight responses finish) -> remove the per-run cache. Unlike Chrome there is no
+  so in-flight responses finish) -> remove the per-run cache (isolated launch) or keep the
+  persistent profile and release its lock. Unlike Chrome there is no
   `beforeunload` confirmation (forced close), as on Windows.
 
 ## Packaged game
@@ -139,16 +142,71 @@ Opening such an `.app` plays the game: no switch, no debug server.
   (`fmt::Arguments::as_str`, no formatting of other debug records). Pinned revision: the
   signal must be rechecked when welding is bumped. No `OnBeforeClose` within 10 s fails the
   run. The fixture gate uses the same close (it used a fixed 1.5 s pump before).
-- **Profile**: the per-run cache under the temporary directory, removed at exit (isolated,
-  as the Windows `--roves-isolated-profile`). A persistent profile and fixed origin (saves
-  across launches) are not part of this slice.
+- **Profile**: persistent per install with a fixed loopback origin in an ordinary launch;
+  per run and removed at exit with `--roves-isolated-profile` (CI). See "Saves and the
+  player profile".
 - **Test-only environment** (CI): `ROVES_GATE_AUTO_CLOSE_MS` pushes one SDL quit event that
   long after the first game frame, so the ordinary close path runs unattended;
   `ROVES_GATE_FRAME_DUMP=<file.bmp>` writes the last frame before close (32-bit top-down
   BMP of the `Bgra8Unorm` readback).
 - **Not in this slice**: input forwarding (mouse/keyboard/IME through welding's API, and the
   `CefDoMessageLoopWork`/`NSEvent` question in "Chromium reference"), window title from the
-  page, resize, persistent profile, signing/notarisation, Steam.
+  page, resize, native error dialogs, signing/notarisation, Steam.
+
+## Saves and the player profile
+
+The macOS counterpart of the Windows player's persistent profile (Windows README "Saves and
+the player profile"), with the same rules: `support/cef-netrender-probe/src/game_rules.rs` is
+compiled here through `#[path]`, unchanged (file names, `player_profile_name`, origin-port
+parsing, plus the origin check and load statuses `src/player.rs` used to duplicate). Only the
+platform glue is in `src/profile.rs`.
+
+- **Root**: `~/Library/Application Support/Roves/Player/<exe stem>-<16 hex>`, where the hash
+  is the 64-bit FNV-1a of the lower-cased canonical `.app` path (the Windows rule with the
+  bundle as the install directory; APFS is case-insensitive by default, like NTFS). Every
+  launch of one install finds the same profile; two packaged games never share storage;
+  moving or renaming the `.app` starts a new profile (documented limitation, as on Windows).
+  The working directory plays no part.
+- **Files**: `player.lock` (held with `flock(LOCK_EX | LOCK_NB)` through std's
+  `File::try_lock` for the whole browser-process run; released by the kernel when the
+  process ends, crash included), `origin-port` (decimal port, written once through a
+  temporary file and a rename), `cef/` (CEF's root cache) and `cef/game-profile` (welding's
+  per-producer on-disk context: `persist_session_cookies`, Local Storage, IndexedDB, HTTP
+  cache).
+- **Order**: profile lock and stored port, then the loopback server on that port (port 0 on
+  the first launch, then the bound port is stored), then CEF with `cache_path = <root>/cef`.
+  The lock is released after `cef::shutdown` and the server stop.
+- **Creation**: welding e991684's `MacosCefProducer::new` refuses `user_data_dir` because CEF
+  initializes an on-disk request context asynchronously on macOS. The player calls
+  `prepare_profile`, pumps `do_message_loop_work` (and SDL events) until
+  `try_new_with_prepared_profile` returns the producer, then loads the game. The isolated
+  launch takes the same path with `game-profile` under its per-run cache, as Windows does.
+  A close request or `ROVES_GATE_TIMEOUT_SECS` before the context is ready fails the run.
+- **Refusals** (before CEF starts, `gate: FAIL ...` then `gate: exit code=N`): profile held
+  by another instance -> exit 6; stored port taken by another program -> exit 6 (another
+  port would silently show an empty game); damaged `origin-port` -> exit 1 (never replaced
+  by a new origin). No native dialog yet (Windows shows an SDL message box); log only.
+- **Switch**: `--roves-isolated-profile` (packaged game only, otherwise exit 1) keeps the
+  previous behaviour: a per-run cache under the temporary directory, removed at exit, no
+  file under the persistent root. Any other `--roves-*` argument is rejected. The fixture
+  gate always uses a per-run cache.
+- **Keychain**: `--use-mock-keychain` stays (unattended runs). Whether cookies encrypted
+  with the mock keychain in one launch decrypt in the next was **not checked** in the
+  Chromium source or in CI; Local Storage and IndexedDB, which are not keychain-encrypted,
+  do not depend on it. The distribution choice is still open ("Open risks").
+
+Chromium reference (pinned `f2700724f59f`, sparse paths `chrome/common/chrome_paths_mac.mm`
+and `chrome/browser/process_singleton_posix.cc` added):
+
+- `chrome_paths_mac.mm:72-88`: the default user-data directory is
+  `base::DIR_APP_DATA` (`~/Library/Application Support`) plus a product name from the outer
+  bundle's `Info.plist`. The player uses the same parent; the name is per install instead of
+  per product so different games stay apart, as on Windows.
+- `process_singleton_posix.cc:480-512` (`ReplaceOldSingletonLock`, macOS): Chrome's
+  profile lock relies on `flock(LOCK_EX | LOCK_NB)` being dropped by the kernel when the
+  owner dies, which is the property `player.lock` uses. Chrome's current `SingletonLock`
+  symlink (hostname-pid) and socket also forward the second launch's command line to the
+  running instance; the player has nothing to forward and refuses the second launch.
 
 ## Verdicts
 
@@ -158,7 +216,10 @@ The main binary prints `gate:` lines on stdout and exits with:
 | --- | --- | --- |
 | 0 | An imported frame's centre 64x64 block matched dodger blue `[255,144,30,255]` BGRA ±8, renderer sandboxed, browser closed | Accepted load-end, a frame after it, close requested, last frame not a single colour, renderer sandboxed, browser closed, server stopped |
 | 2 | `NO_ACCELERATED_FRAME`: no `OnAcceleratedPaint` before the timeout, nothing failed | Game loaded but no accelerated frame at all before the timeout |
-| 1 | Any `gate: FAIL` (setup, non-Metal interop, `acquire_frame`/readback, wgpu error, content process terminated, no match, renderer missing or unsandboxed, no `OnBeforeClose`) | Any `gate: FAIL`, plus: load-end rejected or missing, load error, off-origin commit, close before the first game frame, server stop error |
+| 6 | - | Before CEF starts: persistent profile held by another instance, or its stored origin port taken |
+| 1 | Any `gate: FAIL` (setup, non-Metal interop, `acquire_frame`/readback, wgpu error, content process terminated, no match, renderer missing or unsandboxed, no `OnBeforeClose`) | Any `gate: FAIL`, plus: load-end rejected or missing, load error, off-origin commit, close before the first game frame, server stop error, damaged `origin-port`, game profile not ready, unknown `--roves-*` switch |
+
+Every run ends with `gate: exit code=<N>`, including the refusals that never start CEF.
 
 The fixture is a `data:` page (blue, plus a 1 px corner element animated with
 `requestAnimationFrame` so CEF keeps painting). The uniform colour proves the frame's
@@ -195,12 +256,34 @@ template build logs and provenance, packaged-file hashes) and `cef-macos-player-
 zipped `.app`, with the game when packaging ran; unsigned apart from the linker's ad-hoc
 signature). Never gates a release.
 
+That packaged run passes `--roves-isolated-profile` and additionally requires
+`player profile=isolated cache=`, `game profile ready dir=.../game-profile`, `cache removed`
+and `exit code=0`, and no persistent-profile line. A following step mirrors the Windows
+package's persistent-profile step on the same `.app`: two ordinary launches (auto-close
+3000 ms) from an unrelated working directory, each exiting 0 (or 2 when the fixture gave 2)
+with, in order, the profile root line, the origin, `profile=persistent cache=<root>/cef`,
+CEF init on that cache, `game profile ready dir=<root>/cef/game-profile`, an accepted
+load-end, browser closed, CEF shutdown, loopback stopped, `player profile kept`, exit lines;
+no `FAIL`, `cache removed` or DevTools line. Across launches: the root is
+`~/Library/Application Support/Roves/Player/roves-cef-macos-gate-<16 hex>`, the first starts
+it (`origin-port=new`, port stored), the second reuses the same root and port without
+rewriting it, both origins are equal, `origin-port` holds that port and `cef/` and
+`cef/game-profile` exist after exit (entries listed as notices). Then, with CEF never
+initialized: `player.lock` held by a perl `flock` -> exit 6 `FAIL player profile busy`; the
+port held by a perl listener -> exit 6 `FAIL game loopback port busy port=<port>`; a damaged
+`origin-port` -> exit 1. No process may remain; the profile is removed at the end. Logs in
+`cef-macos-gate-logs` (`player-profile/*.log`). A game save written in one launch and read
+in the next is not checked (no page injection; manual check, as on Windows).
+
 Local checks done on Windows (light only, as required):
 `cargo check`/`cargo clippy --target aarch64-apple-darwin --no-default-features --features dox --bins`
 (clean, 1.99.1), `cargo fmt --check`, YAML parse. Packaged-game slice: the same clippy with
 `-D warnings`, `cargo metadata --locked`, the CI graph check (wgpu 29 users, wgpu 30 only
 under cef), `bash -n` of every run script, and the player step's ordered log check run on a
-simulated log (passes; a removed `loopback stopped` line and a wrong exit code both fail). They type-check the macOS code paths of
+simulated log (passes; a removed `loopback stopped` line and a wrong exit code both fail).
+Persistent-profile slice: the same clippy `-D warnings` and fmt, YAML parse, `bash -n` of every
+run script, and the new step's root/origin/port extraction and root pattern on a synthetic
+log (accepts a valid root, rejects a malformed one). They type-check the macOS code paths of
 welding, objc2 and wgpu Metal; they do not build CEF or SDL, link or run anything.
 
 ## Open risks and blockers (not verified)
@@ -230,7 +313,16 @@ welding, objc2 and wgpu Metal; they do not build CEF or SDL, link or run anythin
   them is a manual check on a real Mac, not verified here.
 - **Keychain**: the gate passes `--use-mock-keychain` (unattended runs would otherwise block
   on Chromium's Safe Storage prompt). The player needs a deliberate choice before
-  distribution.
+  distribution; with the persistent profile the choice also decides whether cookies stay
+  readable across launches and across a later switch to the real keychain.
+- **App Translocation**: Gatekeeper runs a quarantined app that the user did not move from a
+  random read-only path. The profile name follows the `.app` path, so each such launch
+  would get a new, empty profile. The player prints `gate: WARN app is translocated` and
+  continues; signing/notarisation and installing into `/Applications` avoid it. A bundle-id
+  based name would avoid it too but would let two games built from this gate share storage.
+  Not exercised in CI (the runner's `.app` is not quarantined).
+- **Saves across launches**: CI proves the same profile and origin across launches, not that
+  a real game's save survives; manual check on a Mac.
 - **Distribution**: code signing, hardened-runtime entitlements for the helpers and
   notarisation are not addressed here.
 

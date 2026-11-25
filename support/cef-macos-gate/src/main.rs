@@ -13,12 +13,23 @@
 //! - 0: the mode's checks passed and the renderer was sandboxed.
 //! - 2: no accelerated frame arrived before the timeout (e.g. a VM where Chromium disables
 //!   GPU compositing), but nothing failed and the renderer was sandboxed.
+//! - 6: packaged game only, before CEF starts: the persistent profile is held by another
+//!   instance, or its stored origin port is taken by another program.
 //! - 1: any failure.
 //!
 //! Every verdict line starts with `gate:` on stdout; CI checks those lines.
 
+/// The Windows player's pure rules (origin check, load statuses, profile name and files,
+/// origin-port parsing), compiled unchanged; std only. Most of it (Windows keyboard
+/// translation, test sequences) is unused here.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../../cef-netrender-probe/src/game_rules.rs"]
+mod game_rules;
 #[cfg(target_os = "macos")]
 mod player;
+#[cfg(target_os = "macos")]
+mod profile;
 /// The stage-1 window probe's loopback server (axum + tower-http `ServeDir` on 127.0.0.1),
 /// compiled unchanged as in the Windows player (`support/cef-netrender-probe/src/game.rs`).
 #[cfg(target_os = "macos")]
@@ -110,13 +121,15 @@ mod gate {
         // Debug only so welding's `on_before_close` record reaches the logger; other debug
         // records are dropped in `log` without being formatted.
         let _ = log::set_logger(&Logger).map(|()| log::set_max_level(log::LevelFilter::Debug));
-        match run_inner() {
+        let code = match run_inner() {
             Ok(code) => code,
             Err(error) => {
                 println!("gate: FAIL {error}");
                 1
             },
-        }
+        };
+        println!("gate: exit code={code}");
+        code
     }
 
     pub(crate) fn env_u64(name: &str) -> Option<u64> {
@@ -146,17 +159,102 @@ mod gate {
         let game_dir = contents.join("Resources").join("game");
         let game = game_dir.join("index.html").is_file().then_some(game_dir);
 
+        // Our only switch (README "Saves and the player profile"); Chromium ignores it.
+        let mut isolated = false;
+        for arg in std::env::args().skip(1) {
+            if arg == crate::profile::ISOLATED_PROFILE_SWITCH {
+                isolated = true;
+            } else if arg.starts_with("--roves-") {
+                return Err(format!("unknown switch {arg}"));
+            }
+        }
+        if isolated && game.is_none() {
+            return Err(format!(
+                "{} needs the packaged game (Contents/Resources/game/index.html)",
+                crate::profile::ISOLATED_PROFILE_SWITCH
+            ));
+        }
+
+        // Packaged game, ordinary launch: the persistent profile is opened (lock, stored
+        // origin port) before the loopback server and CEF start, as on Windows. The lock
+        // lives until this function returns, after CEF shut down.
+        let profile = match game.as_ref().filter(|_| !isolated) {
+            Some(_) => {
+                let app = contents.parent().ok_or("cannot resolve the .app")?;
+                let root = crate::profile::default_root(&exe, app)?;
+                if crate::profile::translocated(app) {
+                    println!(
+                        "gate: WARN app is translocated by Gatekeeper; its profile follows \
+                         this launch's path (move the app to keep saves)"
+                    );
+                }
+                match crate::profile::PlayerProfile::open(&root) {
+                    Ok(profile) => {
+                        println!(
+                            "gate: player profile root={} lock=acquired origin-port={}",
+                            root.display(),
+                            profile
+                                .stored_port
+                                .map_or_else(|| "new".to_owned(), |port| port.to_string())
+                        );
+                        Some(profile)
+                    },
+                    Err(crate::profile::ProfileError::Busy) => {
+                        println!(
+                            "gate: FAIL player profile busy root={} (another instance of this \
+                             game is running)",
+                            root.display()
+                        );
+                        return Ok(crate::profile::EXIT_CONTENTION);
+                    },
+                    Err(crate::profile::ProfileError::Failed(error)) => {
+                        return Err(format!("player profile root={}: {error}", root.display()));
+                    },
+                }
+            },
+            None => None,
+        };
+
         // Packaged game: the loopback origin must be known before the browser is created,
         // and it outlives CEF so in-flight responses finish (Windows player order).
         let server = match game.as_deref() {
             Some(dir) => {
-                let server = crate::server::start(dir, 0)
-                    .map_err(|e| format!("game loopback server: {e}"))?;
+                let port = profile.as_ref().and_then(|p| p.stored_port).unwrap_or(0);
+                let server = match crate::server::start(dir, port) {
+                    Ok(server) => server,
+                    // The stored port is the saves' origin: another port would silently show
+                    // an empty game, so a taken port ends the run.
+                    Err(error)
+                        if profile.is_some()
+                            && matches!(
+                                error.kind(),
+                                std::io::ErrorKind::AddrInUse
+                                    | std::io::ErrorKind::PermissionDenied
+                            ) =>
+                    {
+                        println!("gate: FAIL game loopback port busy port={port} error={error}");
+                        return Ok(crate::profile::EXIT_CONTENTION);
+                    },
+                    Err(error) => return Err(format!("game loopback server: {error}")),
+                };
                 println!(
                     "gate: mode=packaged-game dir={} origin={}",
                     dir.display(),
                     server.origin
                 );
+                // First launch of a persistent profile: keep this origin for every later one.
+                if let Some(profile) = profile.as_ref().filter(|p| p.stored_port.is_none()) {
+                    let stored = crate::game_rules::origin_port(&server.origin)
+                        .ok_or_else(|| format!("unexpected origin {}", server.origin))
+                        .and_then(|port| profile.store_port(port).map(|()| port));
+                    match stored {
+                        Ok(port) => println!("gate: player origin-port stored port={port}"),
+                        Err(error) => {
+                            stop_server(Some(server));
+                            return Err(format!("player origin-port not stored: {error}"));
+                        },
+                    }
+                }
                 Some(server)
             },
             None => {
@@ -165,8 +263,25 @@ mod gate {
             },
         };
 
-        let cache =
-            std::env::temp_dir().join(format!("roves-cef-macos-gate-{}", std::process::id()));
+        // Persistent profile: `<root>/cef`, kept. Fixture gate and isolated packaged game: a
+        // per-run directory under the temporary directory, removed at exit.
+        let cache = match profile.as_ref() {
+            Some(profile) => crate::profile::cef_dir(&profile.root),
+            None => {
+                std::env::temp_dir().join(format!("roves-cef-macos-gate-{}", std::process::id()))
+            },
+        };
+        if game.is_some() {
+            println!(
+                "gate: player profile={} cache={}",
+                if profile.is_some() {
+                    "persistent"
+                } else {
+                    "isolated"
+                },
+                cache.display()
+            );
+        }
         let mut config = CefRuntimeConfig::new(&frameworks, CefSandboxMode::Sandboxed);
         config.cache_path = Some(cache.clone());
         // Unattended: Chromium's Safe Storage would otherwise ask for the login keychain
@@ -220,6 +335,7 @@ mod gate {
                                 &sdl_events,
                                 &gpu,
                                 &server.origin,
+                                &cache.join(crate::profile::GAME_PROFILE_DIR),
                                 timeout,
                             )
                         },
@@ -247,9 +363,13 @@ mod gate {
         drop(runtime);
         println!("gate: cef shutdown complete");
         let code = if stop_server(server) { code } else { 1 };
-        match std::fs::remove_dir_all(&cache) {
-            Ok(()) => println!("gate: cache removed"),
-            Err(error) => println!("gate: cache not removed: {error}"),
+        match profile.as_ref() {
+            // The saves: kept; the lock is released when `profile` drops on return.
+            Some(profile) => println!("gate: player profile kept root={}", profile.root.display()),
+            None => match std::fs::remove_dir_all(&cache) {
+                Ok(()) => println!("gate: cache removed"),
+                Err(error) => println!("gate: cache not removed: {error}"),
+            },
         }
         println!("gate: shutdown complete exit={code}");
         Ok(code)

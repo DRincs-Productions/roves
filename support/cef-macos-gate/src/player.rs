@@ -10,6 +10,9 @@
 //! - the close path: an SDL quit or window close request ends the loop, then the caller
 //!   closes the browser and waits for `OnBeforeClose` before `CefShutdown`.
 //!
+//! The browser uses welding's on-disk context `<root cache>/game-profile`: persistent in the
+//! ordinary launch, per run with `--roves-isolated-profile` (`src/profile.rs`, `main.rs`).
+//!
 //! Nothing is injected into the page, no host API is exposed, no DevTools endpoint or
 //! remote-debugging port is opened, and no input is forwarded yet (later slice).
 //!
@@ -19,7 +22,7 @@
 
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::Ordering,
     time::{Duration, Instant},
 };
@@ -31,25 +34,22 @@ use welding::{
     macos_cef::{MacosCefConfig, MacosCefProducer},
 };
 
-use crate::gate::{Gpu, distinct_colours, env_u64, frame_pixels, renderer_sandboxed, write_bmp};
+use crate::{
+    game_rules::{load_status_ok, on_origin},
+    gate::{Gpu, distinct_colours, env_u64, frame_pixels, renderer_sandboxed, write_bmp},
+};
 
 /// Console lines printed before only counting them.
 const CONSOLE_LOG_CAP: u32 = 200;
 /// Longest console message kept per line (characters).
 const CONSOLE_MESSAGE_MAX: usize = 300;
 
-/// Same rule as the Windows player (`support/cef-netrender-probe/src/game_rules.rs`): the URL
-/// is the origin itself or a path, query or fragment below it.
-fn on_origin(origin: &str, url: &str) -> bool {
-    url.strip_prefix(origin)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#']))
-}
-
-/// Accepted main-frame document statuses, as on Windows (304: revalidated from the cache).
-fn load_status_ok(status: i32) -> bool {
-    (200..300).contains(&status) || status == 304
-}
-
+/// `profile_dir` is welding's on-disk context for the game (`<root cache>/game-profile`), in
+/// the persistent profile and in the isolated per-run cache alike, as on Windows. welding's
+/// macOS producer refuses `user_data_dir` in `new`: CEF initializes such a context
+/// asynchronously, so it is prepared first and the browser is created once CEF reports it
+/// ready (`prepare_profile` / `try_new_with_prepared_profile`, pumped from this loop).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn drive(
     runtime: &CefRuntime,
     window: &sdl3::video::Window,
@@ -57,24 +57,59 @@ pub(crate) fn drive(
     sdl_events: &sdl3::EventSubsystem,
     gpu: &Gpu,
     origin: &str,
+    profile_dir: &Path,
     timeout: Duration,
 ) -> Result<(i32, MacosCefProducer), String> {
     let auto_close = env_u64("ROVES_GATE_AUTO_CLOSE_MS").map(Duration::from_millis);
     let dump = std::env::var_os("ROVES_GATE_FRAME_DUMP").map(PathBuf::from);
     let size = gpu.size();
     let url = format!("{origin}/");
-    let mut producer = MacosCefProducer::new(
-        runtime,
-        MacosCefConfig {
-            surface: CefSurfaceConfig {
-                initial_url: url.clone(),
-                initial_size: size,
-                scale_factor: window.display_scale(),
-                ..Default::default()
-            },
+    let config = MacosCefConfig {
+        surface: CefSurfaceConfig {
+            initial_url: url.clone(),
+            initial_size: size,
+            scale_factor: window.display_scale(),
+            user_data_dir: Some(profile_dir.to_path_buf()),
+            ..Default::default()
         },
-    )
-    .map_err(|e| format!("CEF producer: {e}"))?;
+    };
+    let preparing = Instant::now();
+    let mut prepared = MacosCefProducer::prepare_profile(runtime, &config)
+        .map_err(|e| format!("CEF game profile: {e}"))?;
+    let mut producer = loop {
+        for event in events.poll_iter() {
+            if matches!(
+                event,
+                Event::Quit { .. }
+                    | Event::Window {
+                        win_event: WindowEvent::CloseRequested,
+                        ..
+                    }
+            ) {
+                return Err("closed before the game profile was ready".into());
+            }
+        }
+        runtime.do_message_loop_work();
+        if let Some(producer) =
+            MacosCefProducer::try_new_with_prepared_profile(&config, &mut prepared)
+                .map_err(|e| format!("CEF producer: {e}"))?
+        {
+            break producer;
+        }
+        if preparing.elapsed() >= timeout {
+            return Err(format!(
+                "game profile not ready within {}s",
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(4));
+    };
+    drop(prepared);
+    println!(
+        "gate: game profile ready dir={} elapsed_ms={}",
+        profile_dir.display(),
+        preparing.elapsed().as_millis()
+    );
     println!(
         "gate: producer created mode={:?} size={}x{} url={url}",
         producer.surface_mode(),
