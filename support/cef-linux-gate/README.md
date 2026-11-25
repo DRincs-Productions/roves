@@ -61,7 +61,9 @@ wgpu 29.0.4 for the gate, welding and grafting; wgpu 30.0.2 only under `cef`
 - **Window**: SDL3 with `SDL_VIDEO_DRIVER=x11`, Xlib handles through `raw-window-handle`
   -> `wgpu::Instance::create_surface_unsafe` (Vulkan X11 surface) on the same device. The
   gate presents with `wgpu::util::TextureBlitter` to an sRGB surface format (as wgpu-weld's
-  Linux demo); no shader of ours.
+  Linux demo); no shader of ours. The surface asks for `AutoVsync`, but FIFO does not block
+  under Xvfb + lavapipe (CI run 45612105775 presented ~2450 times per second), so the drive
+  loop is also paced to one iteration per 16 ms; `gate: loop end` reports `present_rate_hz`.
 - **Order**: CEF initialises first, then SDL3 (same as the macOS gate).
 
 ## Chromium reference (pinned `f2700724f59f`, sparse paths added for this gate)
@@ -83,6 +85,19 @@ wgpu 29.0.4 for the gate, welding and grafting; wgpu 30.0.2 only under `cef`
 - `sandbox/policy/linux/sandbox_debug_handling_linux.cc:67-76`: sandboxed children set
   `PR_SET_DUMPABLE 0`, so `/proc/<pid>/ns/*` and `environ` are not readable by the browser's
   user. The gate reads only world-readable `/proc/<pid>/status` and `cmdline`.
+- `content/zygote/zygote_linux.cc:530-612` (`Zygote::ReadArgsAndFork`): a zygote-forked
+  child gets the command line the browser sent in the fork request and calls
+  `SetProcessTitleFromCommandLine(nullptr)`; `base/process/set_process_title.cc:49-106` and
+  `set_process_title_linux.cc` (`setproctitle_init`) only rewrite the title when the argv
+  handed to `ContentMain` (`content/app/content_main.cc:252`) is the kernel's contiguous
+  argv followed by `environ`. The title is one string `"<exe> <arg> ..."`.
+- `content/browser/renderer_host/renderer_sandboxed_process_launcher_delegate.cc:38-46`,
+  `content/browser/service_host/utility_sandbox_delegate.cc:140-197`,
+  `content/common/zygote/zygote_communication_linux.cc:266-269`: renderers fork from the
+  generic (pre-sandboxed) zygote; utilities fork from the generic zygote, from the
+  unsandboxed zygote (`--no-zygote-sandbox`) or are launched directly; the GPU process is
+  launched directly. `content/zygote/zygote_main_linux.cc:74-160`: the zygote enters layer 1
+  and becomes or forks the PID-namespace init, but seccomp-BPF is installed by each child.
 - `ui/ozone/platform/x11/x11_surface_factory.cc:231-258` and
   `ui/gfx/linux/gbm_support_x11.cc:32-66`: under Ozone/X11, native pixmaps (the DMA-BUF
   planes OSR hands out) are GBM buffers on a DRM fd obtained from the X server through
@@ -113,7 +128,25 @@ native namespace/setuid selection); there is no unsandboxed switch. Evidence, ta
 | `--no-sandbox` in `cmdline` | sandbox disabled | absent |
 
 At least one renderer is required and all renderers must pass; zygote, GPU and utility
-processes are reported only. The two layer-1 variants cannot be told apart from `/proc`
+processes are reported only.
+
+**Renderer identity.** Seccomp, `NoNewPrivs` and `NSpid` are identical for renderers and for
+sandboxed utilities forked from the same zygote, so they cannot identify a renderer. A
+process counts as a renderer only when its `--type=renderer` comes from the process title
+Chromium writes from the zygote fork request, **and** its parent is the generic zygote
+(`--type=zygote`, no `--no-zygote-sandbox`, no seccomp). CEF subprocesses therefore receive
+the kernel's original argv (captured through glibc's `.init_array` arguments) instead of
+cef-rs' `Args::new()` copy, which made `setproctitle_init` give up and left every forked
+child showing `--type=zygote` (CI run 45612105775: `renderers=0` with three seccomp-BPF
+descendants). The browser process keeps welding's copy. Any seccomp process still titled
+`--type=zygote`, or a titled renderer not forked by the generic zygote, is
+`role=unidentified` and fails the gate: it is never counted as a renderer nor ignored.
+Each `gate: child` line reports `ppid`, `role` and `title=chromium|exec`. The title is
+written by the child itself; this is identity reporting for the gate's trusted fixture, not
+a security boundary (the sandbox facts come from the kernel). Cross-checking the identity
+through CEF itself (`CefBrowserProcessHandler::OnBeforeChildProcessLaunch` gives no PID; a
+`CefRenderProcessHandler` report would need welding's `CefApp`) is not available with the
+pinned welding. The two layer-1 variants cannot be told apart from `/proc`
 of a non-dumpable process; the run states which one Chromium's own order implies
 (`gate: host userns-probe=... sandbox-layer1-expected=namespace|setuid|none`) and CI
 enforces that expectation by setting `kernel.apparmor_restrict_unprivileged_userns`.
@@ -131,7 +164,7 @@ The binary prints `gate:` lines on stdout and exits with:
 | 0 | An imported frame's centre 64x64 block matched dodger blue (`[30,144,255]` in the frame's channel order, ±8) and every renderer was sandboxed. The PASS line carries `evidence=gpu` or `evidence=software-adapter` |
 | 2 | `NO_ACCELERATED_FRAME`: no `OnAcceleratedPaint` before `ROVES_GATE_TIMEOUT_SECS` (default 60), nothing failed, renderers sandboxed |
 | 3 | `NO_DMABUF_DEVICE`: the Vulkan adapter is a CPU implementation without the import extensions; a plain device presents instead, delivered frames are counted and dropped; nothing failed, renderers sandboxed. Never returned for a GPU adapter |
-| 1 | Any `gate: FAIL`: running as root, missing CEF files, CEF/SDL/wgpu setup, DMA-BUF device on a GPU adapter, non-Vulkan interop, `acquire_frame` (incl. `IMPLICIT_MODIFIER`) or readback error, wgpu uncaptured error, content process terminated, frames imported but none matched, nothing presented, renderer missing or unsandboxed |
+| 1 | Any `gate: FAIL`: running as root, missing CEF files, CEF/SDL/wgpu setup, DMA-BUF device on a GPU adapter, non-Vulkan interop, `acquire_frame` (incl. `IMPLICIT_MODIFIER`) or readback error, wgpu uncaptured error, content process terminated, frames imported but none matched, nothing presented, renderer missing or unsandboxed, unidentified sandboxed subprocess |
 
 The fixture is the macOS gate's `data:` page (blue, plus a 1 px corner element animated with
 `requestAnimationFrame` so CEF keeps painting). It proves the frame's content arrived, not

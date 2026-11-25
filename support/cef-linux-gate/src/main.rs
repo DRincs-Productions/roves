@@ -28,6 +28,56 @@ fn main() {
     std::process::exit(1);
 }
 
+/// The process's original argv, in the kernel-provided argument area.
+///
+/// Chromium names zygote-forked children by rewriting that area: `ContentMain` calls
+/// `base::SetProcessTitleFromCommandLine(argv)` (content/app/content_main.cc), whose
+/// `setproctitle_init` only accepts an argv whose strings are contiguous and followed by
+/// `environ` (base/process/set_process_title_linux.cc); after the fork the child calls it
+/// again with the renderer/utility command line received over the zygote socket
+/// (content/zygote/zygote_linux.cc, `Zygote::ReadArgsAndFork`). `cef::args::Args::new()`
+/// builds a fresh `CString` array instead, so the check fails silently and every
+/// zygote-forked process keeps showing `--type=zygote` in `/proc/<pid>/cmdline`.
+/// glibc passes `(argc, argv, envp)` to `.init_array` functions (Rust's std relies on the
+/// same convention), which is how the original pointers are captured here.
+#[cfg(target_os = "linux")]
+mod kernel_argv {
+    use std::{
+        ffi::{CStr, c_char, c_int},
+        sync::atomic::{AtomicI32, AtomicPtr, Ordering},
+    };
+
+    static ARGC: AtomicI32 = AtomicI32::new(0);
+    static ARGV: AtomicPtr<*mut c_char> = AtomicPtr::new(std::ptr::null_mut());
+
+    extern "C" fn capture(argc: c_int, argv: *mut *mut c_char, _envp: *mut *mut c_char) {
+        ARGC.store(argc, Ordering::Relaxed);
+        ARGV.store(argv, Ordering::Relaxed);
+    }
+
+    #[used]
+    #[unsafe(link_section = ".init_array")]
+    static CAPTURE: extern "C" fn(c_int, *mut *mut c_char, *mut *mut c_char) = capture;
+
+    /// `Some` only for a CEF subprocess (a `--type=` switch is present) whose original argv
+    /// was captured. The browser process keeps welding's own `Args`: Chromium may rewrite
+    /// this area, and Rust's `std::env::args` reads it lazily.
+    pub fn subprocess_main_args() -> Option<cef::MainArgs> {
+        let argc = ARGC.load(Ordering::Relaxed);
+        let argv = ARGV.load(Ordering::Relaxed);
+        if argv.is_null() || argc <= 0 {
+            return None;
+        }
+        // SAFETY: glibc's argv has `argc` valid NUL-terminated strings and stays mapped for
+        // the life of the process; nothing has rewritten it before the first CEF call.
+        let is_subprocess = (0..argc as usize).any(|i| unsafe {
+            let arg = *argv.add(i);
+            !arg.is_null() && CStr::from_ptr(arg).to_bytes().starts_with(b"--type=")
+        });
+        is_subprocess.then_some(cef::MainArgs { argc, argv })
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod gate {
     use std::{
@@ -64,6 +114,8 @@ mod gate {
     const SAMPLE: u32 = 64;
     const WINDOW: (u32, u32) = (640, 400);
     const CLOSE_PUMP: Duration = Duration::from_millis(1500);
+    /// Upper bound on the drive loop rate (~60 Hz), independent of vsync.
+    const FRAME_INTERVAL: Duration = Duration::from_millis(16);
     const EXE_NAME: &str = "roves-cef-linux-gate";
 
     struct Logger;
@@ -96,6 +148,22 @@ mod gate {
         let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
         // MUST be the first CEF call: Linux CEF re-executes this binary for the zygote,
         // renderer, GPU and utility processes. Those return here and never reach the gate.
+        // Subprocesses get the kernel's own argv (see `kernel_argv`) so Chromium can rewrite
+        // the process title of zygote-forked children; the browser keeps welding's copy.
+        if let Some(main_args) = super::kernel_argv::subprocess_main_args() {
+            let args = cef::args::Args::from(main_args);
+            return match CefRuntime::try_run_subprocess(&args, CefSandboxMode::Sandboxed) {
+                Ok(code) if code >= 0 => code,
+                Ok(code) => {
+                    eprintln!("roves-cef-linux-gate: --type= process returned {code}");
+                    1
+                },
+                Err(error) => {
+                    eprintln!("roves-cef-linux-gate: CEF subprocess entry: {error}");
+                    1
+                },
+            };
+        }
         match CefRuntime::execute_process_from(&dir, CefSandboxMode::Sandboxed) {
             Ok(Some(code)) => return code,
             Ok(None) => {},
@@ -392,6 +460,13 @@ mod gate {
         surface_config.format = format;
         surface_config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&host.device, &surface_config);
+        // FIFO is always offered, but under Xvfb + lavapipe it does not block (CI 45612105775
+        // presented ~2450 times per second); the loop is therefore also paced by FRAME_INTERVAL.
+        println!(
+            "gate: surface format={format:?} present_modes={:?} pacing_ms={}",
+            caps.present_modes,
+            FRAME_INTERVAL.as_millis()
+        );
         let blitter = wgpu::util::TextureBlitter::new(&host.device, format);
 
         let mut producer = LinuxCefProducer::new(
@@ -417,6 +492,7 @@ mod gate {
         let mut matched = false;
         let mut failed = false;
         let mut presented = 0u32;
+        let mut next_tick = started;
         while started.elapsed() < timeout && !matched && !failed {
             for event in events.poll_iter() {
                 if let sdl3::event::Event::Quit { .. } = event {
@@ -504,15 +580,25 @@ mod gate {
             }
             if present(&surface, &surface_config, &host, &blitter, frame.as_ref()) {
                 presented += 1;
-            } else {
-                std::thread::sleep(Duration::from_millis(4));
             }
             failed |= wgpu_failed.load(Ordering::Relaxed);
+            // Bounded pacing whatever the present mode does: at most one iteration (CEF
+            // pump, frame poll, present) per FRAME_INTERVAL; a late iteration resets the
+            // schedule instead of bursting to catch up.
+            next_tick += FRAME_INTERVAL;
+            let now = Instant::now();
+            if next_tick > now {
+                std::thread::sleep(next_tick - now);
+            } else {
+                next_tick = now;
+            }
         }
+        let elapsed = started.elapsed();
         println!(
             "gate: loop end delivered={delivered} matched={matched} presented={presented} \
-             elapsed_ms={}",
-            started.elapsed().as_millis()
+             elapsed_ms={} present_rate_hz={:.1}",
+            elapsed.as_millis(),
+            f64::from(presented) / elapsed.as_secs_f64().max(0.001)
         );
         if matches!(import, Import::DmaBuf) && delivered > 0 && !matched && !failed {
             println!("gate: FAIL {delivered} frame(s) imported, none matched the fixture colour");
@@ -679,8 +765,15 @@ mod gate {
     /// sandboxed processes are non-dumpable, so `/proc/<pid>/ns/*` and `environ` are not).
     struct Child {
         pid: u32,
+        ppid: u32,
+        /// `--type=` value, `?` if absent.
         kind: String,
+        /// Whether `cmdline` is Chromium's rewritten process title (one string) rather than
+        /// the exec-time argv.
+        titled: bool,
         no_sandbox: bool,
+        /// `--no-zygote-sandbox`: marks the unsandboxed zygote (zygote_host_impl_linux.cc).
+        no_zygote_sandbox: bool,
         /// `Seccomp:` 2 = seccomp-BPF filter mode (Chromium's layer 2).
         seccomp: String,
         no_new_privs: String,
@@ -689,9 +782,52 @@ mod gate {
         pid_ns_depth: usize,
     }
 
+    /// What a gate subprocess is, decided from Chromium's own naming plus the process tree.
+    enum Role {
+        /// `--type=zygote` without seccomp. `generic` = the pre-sandboxed zygote that forks
+        /// renderers (no `--no-zygote-sandbox`).
+        Zygote { generic: bool },
+        /// `--type=renderer` whose parent is the generic zygote.
+        Renderer,
+        /// GPU, utility or anything else: reported only.
+        Other,
+        /// Identity cannot be established; never counted as a renderer nor ignored.
+        Unidentified(&'static str),
+    }
+
+    /// Identity comes from the `--type=` that Chromium writes into the child's process
+    /// title from the command line the browser sent in the zygote fork request
+    /// (`Zygote::ReadArgsAndFork` -> `SetProcessTitleFromCommandLine`), checked against the
+    /// launch structure of the pinned Chromium: renderers fork from the generic zygote
+    /// (`RendererSandboxedProcessLauncherDelegate::GetZygote`), the GPU process is
+    /// launched directly, utilities from the generic zygote, the unsandboxed zygote or
+    /// directly (`UtilitySandboxedProcessLauncherDelegate::GetZygote`). A zygote never
+    /// installs seccomp-BPF itself (its children do, after the fork), so a seccomp process
+    /// still titled `--type=zygote` is a forked child whose title was not applied: it could
+    /// be a renderer or a utility, and is reported as unidentified.
+    fn role(child: &Child, parent: Option<&Child>) -> Role {
+        let is_generic_zygote =
+            |c: &Child| c.kind == "zygote" && !c.no_zygote_sandbox && c.seccomp != "2";
+        match child.kind.as_str() {
+            "zygote" if child.seccomp == "2" => Role::Unidentified(
+                "zygote-forked child still shows the zygote command line (Chromium's process \
+                 title was not applied)",
+            ),
+            "zygote" => Role::Zygote {
+                generic: !child.no_zygote_sandbox,
+            },
+            "renderer" if parent.is_some_and(is_generic_zygote) => Role::Renderer,
+            "renderer" => {
+                Role::Unidentified("titled renderer whose parent is not the sandboxed zygote")
+            },
+            _ => Role::Other,
+        }
+    }
+
     /// Requires at least one renderer descendant of this process, every renderer with
     /// seccomp-BPF (`Seccomp: 2`), `NoNewPrivs: 1`, a nested PID namespace and no
-    /// `--no-sandbox`. GPU, utility and zygote processes are reported only.
+    /// `--no-sandbox`, and no unidentified subprocess. Zygote, GPU and utility processes
+    /// are reported only.
     fn renderer_sandboxed() -> bool {
         let me = std::process::id();
         let children = match gate_children(me) {
@@ -703,38 +839,93 @@ mod gate {
         };
         let mut renderers = 0;
         let mut sandboxed = 0;
+        let mut unidentified = 0;
         for child in &children {
+            let parent = children.iter().find(|c| c.pid == child.ppid);
+            let role = role(child, parent);
+            let label = match role {
+                Role::Zygote { generic: true } => "zygote",
+                Role::Zygote { generic: false } => "unsandboxed-zygote",
+                Role::Renderer => "renderer",
+                Role::Other => "other",
+                Role::Unidentified(_) => "unidentified",
+            };
             println!(
-                "gate: child pid={} type={} seccomp={} no_new_privs={} pid_ns_depth={} \
-                 no-sandbox={}",
+                "gate: child pid={} ppid={} type={} role={label} title={} seccomp={} \
+                 no_new_privs={} pid_ns_depth={} no-sandbox={}",
                 child.pid,
+                child.ppid,
                 child.kind,
+                if child.titled { "chromium" } else { "exec" },
                 child.seccomp,
                 child.no_new_privs,
                 child.pid_ns_depth,
                 child.no_sandbox
             );
-            if child.kind == "renderer" {
-                renderers += 1;
-                if child.seccomp == "2"
-                    && child.no_new_privs == "1"
-                    && child.pid_ns_depth >= 2
-                    && !child.no_sandbox
-                {
-                    sandboxed += 1;
-                }
+            match role {
+                Role::Renderer => {
+                    renderers += 1;
+                    if child.seccomp == "2"
+                        && child.no_new_privs == "1"
+                        && child.pid_ns_depth >= 2
+                        && !child.no_sandbox
+                    {
+                        sandboxed += 1;
+                    }
+                },
+                Role::Unidentified(reason) => {
+                    unidentified += 1;
+                    println!(
+                        "gate: FAIL sandbox child pid={} unidentified: {reason}",
+                        child.pid
+                    );
+                },
+                Role::Zygote { .. } | Role::Other => {},
             }
         }
-        let ok = renderers > 0 && sandboxed == renderers;
+        let ok = renderers > 0 && sandboxed == renderers && unidentified == 0;
         if ok {
             println!(
                 "gate: PASS sandbox renderers={renderers} all with seccomp-bpf and a PID \
                  namespace"
             );
         } else {
-            println!("gate: FAIL sandbox renderers={renderers} sandboxed={sandboxed}");
+            println!(
+                "gate: FAIL sandbox renderers={renderers} sandboxed={sandboxed} \
+                 unidentified={unidentified}"
+            );
         }
         ok
+    }
+
+    /// Splits `/proc/<pid>/cmdline` of a gate process into its switches, or `None` if the
+    /// process is not this gate. Two shapes exist: the exec-time argv (NUL-separated,
+    /// argv[0] = the gate) and Chromium's process title, one string
+    /// `"<exe or argv0> <arg> <arg> ..."` (base/process/set_process_title.cc). Returns the
+    /// switches and whether the title shape was seen. The title shape assumes no space in
+    /// the gate's path.
+    fn parse_cmdline(raw: &[u8]) -> Option<(Vec<String>, bool)> {
+        let elements: Vec<String> = raw
+            .split(|&b| b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect();
+        let is_gate = |s: &str| Path::new(s).file_name().is_some_and(|n| n == EXE_NAME);
+        let first = elements.first()?;
+        if is_gate(first) {
+            return Some((elements[1..].to_vec(), false));
+        }
+        let (head, rest) = first.split_once(' ')?;
+        if elements.len() != 1 || !is_gate(head) {
+            return None;
+        }
+        Some((
+            rest.split(' ')
+                .filter(|a| !a.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            true,
+        ))
     }
 
     fn status_field(status: &str, key: &str) -> Option<String> {
@@ -764,28 +955,25 @@ mod gate {
             let Ok(cmdline) = std::fs::read(base.join("cmdline")) else {
                 continue;
             };
-            let args: Vec<String> = cmdline
-                .split(|&b| b == 0)
-                .filter(|a| !a.is_empty())
-                .map(|a| String::from_utf8_lossy(a).into_owned())
-                .collect();
-            let is_gate = args
-                .first()
-                .is_some_and(|a| Path::new(a).file_name().is_some_and(|n| n == EXE_NAME));
-            if !is_gate {
+            let Some((args, titled)) = parse_cmdline(&cmdline) else {
                 continue;
-            }
+            };
             let Ok(status) = std::fs::read_to_string(base.join("status")) else {
                 continue;
             };
             children.push(Child {
                 pid,
+                ppid: status_field(&status, "PPid:")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
                 kind: args
                     .iter()
                     .find_map(|a| a.strip_prefix("--type="))
                     .unwrap_or("?")
                     .to_owned(),
+                titled,
                 no_sandbox: args.iter().any(|a| a == "--no-sandbox"),
+                no_zygote_sandbox: args.iter().any(|a| a == "--no-zygote-sandbox"),
                 seccomp: status_field(&status, "Seccomp:").unwrap_or_else(|| "?".into()),
                 no_new_privs: status_field(&status, "NoNewPrivs:").unwrap_or_else(|| "?".into()),
                 pid_ns_depth: status_field(&status, "NSpid:")

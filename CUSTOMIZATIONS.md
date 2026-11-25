@@ -1,3 +1,23 @@
+## 2026-11-25 - CEF Linux gate: renderer identity from Chromium's process title, paced loop
+
+Changed: `support/cef-linux-gate/{src/main.rs,README.md}`. CI run 45612105775 (setuid, X11)
+found `renderers=0` although three descendants had `Seccomp: 2`, `NoNewPrivs: 1` and a nested
+PID namespace: every zygote-forked child still showed `--type=zygote` in `/proc/<pid>/cmdline`.
+Cause: cef-rs `Args::new()` hands CEF a fresh `CString` array, so Chromium's
+`setproctitle_init` (pinned `base/process/set_process_title_linux.cc`) rejects the layout and
+`Zygote::ReadArgsAndFork` cannot retitle the child. CEF subprocesses (a `--type=` argument)
+now enter through `CefRuntime::try_run_subprocess` with the kernel's original argv, captured
+from glibc's `.init_array` arguments; the browser keeps welding's copy. The `/proc` scan parses
+both cmdline shapes (exec argv and the one-string title) and counts a renderer only when it is
+titled `--type=renderer` and its parent is the generic zygote (no `--no-zygote-sandbox`, no
+seccomp), following the pinned launcher delegates; renderer and utility are otherwise
+indistinguishable from `/proc/<pid>/status`. Seccomp processes still titled zygote, or
+renderers outside the generic zygote, are `role=unidentified` and fail the gate (no blanket
+acceptance). The drive loop is paced to one iteration per 16 ms (FIFO did not block under
+Xvfb + lavapipe: 146861 presents in 60 s) and reports `present_rate_hz`. Exit codes, the CPU
+adapter classification (no `VK_EXT_image_drm_format_modifier` -> exit 3, never GPU evidence)
+and the workflow checks are unchanged. Not user-facing; no `mach` surface change.
+
 ## 2026-11-25 - CEF + SDL3 + wgpu candidate: standalone Steamworks feasibility gate (experiment only)
 
 Added: `support/steamworks-gate/{Cargo.toml,Cargo.lock,README.md,src/main.rs}`,
