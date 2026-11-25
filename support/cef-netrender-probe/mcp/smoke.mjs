@@ -330,7 +330,7 @@ async function packaged([pkg, out]) {
   const gameLog = join(resolve(out), "game.log");
   const game = launch(join(resolve(pkg), "play.exe"), [
     "--roves-isolated-profile", "--roves-no-error-dialog", "--roves-timeout-ms=60000",
-    "--roves-auto-close-ms=5000", `--roves-log=${gameLog}`,
+    "--roves-auto-close-ms=15000", `--roves-log=${gameLog}`,
   ], resolve(out));
   let client;
   try {
@@ -351,22 +351,6 @@ async function packaged([pkg, out]) {
     });
     assert.equal(page.origin, record.origin);
     log(`page ${JSON.stringify(page)}`);
-    // The game's own testing bridge (pixi-vn `Game.testing`, `window.pixiVN`) through MCP:
-    // when the game exposes it, `getState()` must answer; a game that does not is reported.
-    // Short wait: the game auto-closes 5 s after its startup screen is released.
-    const pixiVN = await until("pixiVN probe", 3_000, async () => {
-      const value = await client.value("evaluate_script", {
-        expression: "typeof window.pixiVN === 'object' && window.pixiVN !== null " +
-          "? { present: true, state: window.pixiVN.getState() } : { present: false }",
-      });
-      return { done: value.present, value };
-    }).catch(() => ({ present: false }));
-    if (pixiVN.present) {
-      assert.ok(pixiVN.state && typeof pixiVN.state === "object", "pixiVN.getState() returned no object");
-      console.log(`::notice::pixiVN getState keys=${Object.keys(pixiVN.state).sort().join(",")}`);
-    } else {
-      console.log("::notice::pixiVN not exposed by this game build (window.pixiVN absent)");
-    }
     const now = await client.value("get_state");
     const click = await client.tool("click", { x: 10, y: 10 });
     if (now.input_ready) {
@@ -375,6 +359,22 @@ async function packaged([pkg, out]) {
     } else {
       assert.ok(!click.ok && /not ready/.test(click.text), click.text);
       log(`startup=${now.startup}: click refused as not ready (expected without accelerated frames)`);
+    }
+    // The game's own testing bridge (pixi-vn `Game.testing`, `window.pixiVN`) through MCP,
+    // last so it cannot delay the checks above: when the game exposes it, `getState()` must
+    // answer; a game without it, or an evaluation that does not answer in time, is reported.
+    const pixiVN = await Promise.race([
+      client.value("evaluate_script", {
+        expression: "typeof window.pixiVN === 'object' && window.pixiVN !== null " +
+          "? { present: true, state: window.pixiVN.getState() } : { present: false }",
+      }),
+      delay(4_000).then(() => ({ present: false, timeout: true })),
+    ]).catch((error) => ({ present: false, error: error.message }));
+    if (pixiVN.present) {
+      assert.ok(pixiVN.state && typeof pixiVN.state === "object", "pixiVN.getState() returned no object");
+      console.log(`::notice::pixiVN getState keys=${Object.keys(pixiVN.state).sort().join(",")}`);
+    } else {
+      console.log(`::notice::pixiVN not available through MCP ${JSON.stringify(pixiVN)}`);
     }
     await client.stop();
     client = undefined;
