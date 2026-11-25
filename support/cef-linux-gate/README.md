@@ -333,7 +333,7 @@ layer-1 line or `shutdown complete exit=<code>`, an exit other than 0/2, or a ga
 alive after exit. With a `Cpu` adapter it also requires `paint path=Software("cpu-adapter")
 evidence=software`, `mode=CpuPaint`, exit 0 and a `PASS pixel ... evidence=software` line.
 
-Packaged game (same job): `DRincs-Productions/visual-novel-template` at `e88e9ac29e73`
+Packaged game (same job): `DRincs-Productions/visual-novel-template` at `92e5115ac52d`
 (same pin and `npm ci` + `npm run build` as the Windows and macOS packages), `dist/` copied
 byte for byte into `game/` (checked with `diff -r`, SHA-256 list in the logs); the packaged
 runs use the setuid layer 1 (Ubuntu's default).

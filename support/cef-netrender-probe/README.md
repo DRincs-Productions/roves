@@ -774,7 +774,7 @@ and `roves-static-fixture done ok=<bool> checks=9`.
 `visual-novel-template-roves-cef-windows-x64`: the same Release bundle with the unmodified
 production web build of
 [DRincs-Productions/visual-novel-template](https://github.com/DRincs-Productions/visual-novel-template)
-at commit `e88e9ac29e736e007904e0767815e21cd8725941`, laid out to be started with a double
+at commit `92e5115ac52de37202b2ebd657053da8322450e3`, laid out to be started with a double
 click. It is a workflow artifact only, never attached to a GitHub Release.
 
 ```text

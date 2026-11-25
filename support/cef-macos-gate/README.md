@@ -360,7 +360,7 @@ GitHub's macOS runners are virtual machines with a paravirtual GPU, and Chromium
 GPU compositing there (as WARP does on Windows); run 45575923557 got exit 0.
 
 Packaged game, on the same `.app` (no second build): checkout of
-`DRincs-Productions/visual-novel-template` at `e88e9ac29e736e007904e0767815e21cd8725941` (the
+`DRincs-Productions/visual-novel-template` at `92e5115ac52de37202b2ebd657053da8322450e3` (the
 Windows package's pin), Node 22, `npm ci` + `npm run build`, provenance in
 `vnt-build-info.txt`; `dist/` copied with `ditto` into `Contents/Resources/game` and compared
 with `diff -r` (byte-for-byte, SHA-256 list as an artifact). One run with

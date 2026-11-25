@@ -1062,7 +1062,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: DRincs-Productions/visual-novel-template
-          ref: e88e9ac29e736e007904e0767815e21cd8725941
+          ref: 92e5115ac52de37202b2ebd657053da8322450e3
           path: visual-novel-template
           persist-credentials: false
       - name: setup node (template build)
@@ -1079,7 +1079,7 @@ jobs:
         shell: bash
         working-directory: visual-novel-template
         run: |
-          pin=e88e9ac29e736e007904e0767815e21cd8725941
+          pin=92e5115ac52de37202b2ebd657053da8322450e3
           head="$(git rev-parse HEAD)"
           test "$head" = "$pin" || { echo "::error::template HEAD $head is not the pin $pin"; exit 1; }
           npm ci --no-audit --no-fund 2>&1 | tee "$RUNNER_TEMP/vnt-npm-ci.log"
@@ -1301,8 +1301,8 @@ jobs:
 
           Game (folder game\, unmodified production build)
             repository   https://github.com/DRincs-Productions/visual-novel-template
-            commit       e88e9ac29e736e007904e0767815e21cd8725941
-            source       https://github.com/DRincs-Productions/visual-novel-template/tree/e88e9ac29e736e007904e0767815e21cd8725941
+            commit       92e5115ac52de37202b2ebd657053da8322450e3
+            source       https://github.com/DRincs-Productions/visual-novel-template/tree/92e5115ac52de37202b2ebd657053da8322450e3
             license      GPL-3.0 (package.json "license"; no LICENSE file at this commit)
             build        npm ci && npm run build (dist/ copied byte for byte)
             $($buildInfo -join "`n  ")
