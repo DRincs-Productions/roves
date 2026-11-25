@@ -1108,14 +1108,62 @@ Pieces (`src/mcp.rs`, pure rules in `src/mcp_rules.rs`, stdio server in `mcp/`):
   `click`, `press_key`, `type_text`. On start it reports the running sessions on stderr; every
   tool call rereads the records (valid shape, PID alive), so the game may start later; with
   several games it asks for `--pid <PID>`. Consumer instructions: `mcp/README.md`.
+- **Page capability `isMcpEnabled()`** (2026-11-25, implemented, not yet built or run in
+  CI). `@drincs/roves-api/core`'s `isMcpEnabled()` reads `window.__ROVES_MCP__ === true`
+  synchronously; `isAvailable()` (Servo's `__ROVES__`, not set by this player) is unchanged.
+  Delivery: only when `mcp::start` succeeded (pipe open, record written), the producer is
+  created on `about:blank` instead of the game URL. Every loop turn the bridge tries CDP
+  `Page.addScriptToEvaluateOnNewDocument` (`source` only, main world, `runImmediately:
+  false`) through the same in-process DevTools channel until the browser exists; when the
+  reply carries an `identifier` (log `mcp page capability registered identifier=<id>`) the
+  host calls welding's `navigate_to_url(<origin>/)` (log `game navigation url=...`). The
+  script (`mcp_rules::page_capability_script`, unit-tested) returns early unless `window.top
+  === window` and `location.origin` equals the game's `http://127.0.0.1:<port>` literal, then
+  defines `__ROVES_MCP__` as `{ value: true, writable: false, enumerable: false,
+  configurable: false }`. It contains nothing else: no pipe, no token, no record path. A CDP
+  error, or no browser/reply within 10 s, logs `mcp page capability unavailable error=...`
+  and loads the game anyway without the marker (fail-closed; `state.page_capability`
+  `pending|registered|unavailable`). `evaluate` is refused until the registration settled, so
+  it never runs in the bootstrap document. Navigation events of `about:blank` are skipped
+  (log `mcp bootstrap event skipped ...`) only until the game commits on its origin
+  (load-end: until the accepted game load-end); afterwards `about:blank` is an off-origin
+  navigation as before. Bridge off or unavailable: initial URL, events and log unchanged.
+  **Why this guarantees the entry script:** Chromium stores the script in the DevTools
+  session's browser-originating state before answering
+  (`content/browser/devtools/protocol/page_handler.cc`
+  `AddScriptToEvaluateOnNewDocumentInternal`, ~793-821, `browser_originating_session_state()
+  ->scripts_to_evaluate_on_new_document`), which is re-sent to every renderer the session
+  attaches to, so it survives the cross-site `about:blank` -> loopback renderer swap. In the
+  renderer, `InspectorPageAgent::DidCreateMainWorldContext`
+  (`third_party/blink/renderer/core/inspector/inspector_page_agent.cc` ~1076-1101) injects
+  the stored scripts when each frame's main-world context is created, before the parser runs
+  any page script, and needs no `Page.enable` (only an attached frontend). Same-origin child
+  frames get the script too and return at the `window.top` check; cross-site frames are
+  separate targets (no auto-attach) and never get it. Revision `f2700724f59f`, sparse
+  checkout of those two files and `content/browser/devtools/protocol/`.
+  **Missing welding API (no upstream request opened):** welding e991684 owns the
+  `CefApp`/`CefRenderProcessHandler` (`WeldApp::build` and `WeldRenderProcessHandler` in
+  `welding/src/app.rs` are `pub(crate)`; the handler implements only
+  `on_process_message_received` for `weld.eval`) and ignores `extra_info` at browser
+  creation, so a host cannot add CEF's own document-start hook `OnContextCreated` (or pass
+  per-browser data to the renderer) without forking welding. The minimal upstream path would
+  be a `CefSurfaceConfig` field for document-start main-world scripts, applied by welding's
+  render-process handler in `OnContextCreated` (with the frame's top-level/origin known
+  there) and delivered through `extra_info`. The CDP route above needs no fork and uses
+  only welding's public DevTools channel, so it was chosen; it costs one CDP round trip and
+  an `about:blank` commit before the game URL in MCP-enabled launches only. Rejected:
+  `execute_script`/`request_script_result` after load-start (races the page's own scripts),
+  a `<script>` rewritten into the served HTML (changes the game's bytes and CSP), a URL
+  parameter or cookie (page-controlled, not top-level-only).
 
 **Security model.** Same Windows user only: the record lives in the user's profile (default
 ACL: the user, SYSTEM, Administrators), the pipe accepts no remote client, and nothing works
 without the token. Any process of the same user can read the record and drive the game; such
 a process could already open or debug the game process itself, so this adds no privilege.
 No TCP listener and no `--remote-debugging-port`/`--remote-debugging-pipe` switch is used; the
-loopback HTTP server is unchanged. Nothing is injected into or exposed to the page (no
-binding, no message router, no script), the CDP session is browser-side only, and no CDP
+loopback HTTP server is unchanged. The page receives only the read-only boolean
+`__ROVES_MCP__` (top-level document on the game origin, bridge running; see above): no
+binding, no message router, no other script, the CDP session is browser-side only, and no CDP
 domain is enabled. The sandbox (bootstrap broker, sandboxed renderers) and the origin policy
 (off-origin commit = FAIL and close; popups refused) are unchanged: an expression that
 navigates away still trips the origin check. `evaluate_script` can change game state: it is
@@ -1153,6 +1201,21 @@ this repository), CEF's `--remote-debugging-port` (unauthenticated TCP),
 `request_script_result` (renderer-side evaluation, no CSP option, no time limit), CDP
 `Input.dispatch*` (would bypass the probe's input translation that the real game uses). No
 CEF fork, no new Cargo crate (one lock line: `serde_json` as a direct dependency).
+
+**Verification of `isMcpEnabled()` (2026-11-25).** Local only: `mcp_rules` tests (8,
+including the page script bounds), `cargo check`/`clippy -D warnings --features dox
+--all-targets` and `cargo fmt --check` on Rust 1.99.1, `node --check mcp/smoke.mjs`,
+roves-api `npm test` (5 cases, no window/regular browser/bridge/no bridge/non-boolean). CI
+gates added, **not run yet**: the fixture smoke now also requires the marker as
+`{ value: true, writable: false, enumerable: false, configurable: false }` in the entry
+script `mcp/fixture/entry.js` (classic, parser-blocking, first page code), unchanged after
+assignment and `delete`, absent in the same-origin child frame `frame.html`, the only
+bridge-named global, and the `registered`/`game navigation` log lines; the new step "MCP
+disabled smoke on the fixture (WARP)" (`smoke.mjs disabled`) runs the plain package's
+`play.exe` on the same fixture without `--roves-mcp` and with `--roves-mcp` while
+`LOCALAPPDATA` points at a file (bridge cannot start): direct load, marker absent in entry
+script and child frame, no record, no bootstrap line, exit 0. Regular browser: the same
+`roves-api` unit tests only; the Chrome DevTools (MCP) check of the fixture served over HTTP was not run (tool permission not granted in this session).
 
 **Verification.** Local: `rustc --edition 2024 --test src/mcp_rules.rs` (7 tests), `cargo
 check/clippy --features dox --all-targets`, `node mcp/smoke.mjs list-only mcp/server.mjs`, and

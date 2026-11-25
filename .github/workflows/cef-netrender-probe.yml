@@ -1706,7 +1706,37 @@ jobs:
           Start-Sleep -Seconds 3
           if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $code = 1 }
           if ($code -ne 0) { Write-Output "::error::MCP fixture smoke failed (exit $code)"; exit 1 }
-          Write-Output '::notice::MCP fixture smoke: discovery, authentication, state, evaluation, click, key and text delivered (WARP, synthetic input through the SDL -> welding path, no GPU frame claim)'
+          Write-Output '::notice::MCP fixture smoke: discovery, authentication, state, isMcpEnabled() marker in the entry script (top-level only), evaluation, click, key and text delivered (WARP, synthetic input through the SDL -> welding path, no GPU frame claim)'
+      # isMcpEnabled() negative cases on the same fixture with the PLAIN package's play.exe (no
+      # mcp\enabled): bridge off (no --roves-mcp), and --roves-mcp while the bridge cannot
+      # start (LOCALAPPDATA points at a file). Required (smoke.mjs disabled): the game loads
+      # directly (no about:blank bootstrap), the marker is absent in the entry script and in
+      # the child frame, no session record, no FAIL line, exit 0 after auto-close.
+      - name: MCP disabled smoke on the fixture (WARP)
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        shell: pwsh
+        run: |
+          $plain = '${{ steps.package.outputs.dir }}'
+          $mcpPkg = '${{ steps.mcp_package.outputs.dir }}'
+          $out = Join-Path $env:RUNNER_TEMP 'cef-mcp-disabled-run'
+          if (Test-Path -LiteralPath $out) { Write-Output "::error::$out already exists"; exit 1 }
+          foreach ($name in @('roves_cef_netrender_probe', 'play')) {
+            Get-Process $name -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+          Start-Sleep -Seconds 2
+          node support/cef-netrender-probe/mcp/smoke.mjs disabled (Join-Path $mcpPkg 'mcp\server.mjs') `
+            (Join-Path $plain 'play.exe') support/cef-netrender-probe/mcp/fixture $out
+          $code = $LASTEXITCODE
+          foreach ($case in @('off', 'unavailable')) {
+            $log = Join-Path $out "$case\game.log"
+            if (Test-Path $log) {
+              Select-String -Path $log -Pattern 'mcp |load-end|roves-mcp-(entry|frame)|exit code=' | ForEach-Object { Write-Output "::notice::$case $($_.Line)" }
+            }
+          }
+          Start-Sleep -Seconds 3
+          if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $code = 1 }
+          if ($code -ne 0) { Write-Output "::error::MCP disabled smoke failed (exit $code)"; exit 1 }
+          Write-Output '::notice::MCP disabled smoke: marker absent with the bridge off and with the bridge unavailable (WARP)'
       # Packaged launch: play.exe of the MCP package started directly (the marker turns the
       # bridge on), discovered without a PID. Required: state and evaluation on the packaged
       # game's origin; click forwarded if the startup screen was released, otherwise refused
@@ -1748,6 +1778,7 @@ jobs:
             ${{ runner.temp }}/cef-mcp-fixture-run/game.log
             ${{ runner.temp }}/cef-mcp-fixture-run/cef-debug.log
             ${{ runner.temp }}/cef-mcp-package-run/game.log
+            ${{ runner.temp }}/cef-mcp-disabled-run/*/game.log
           retention-days: 14
           if-no-files-found: warn
       - name: upload the playable package

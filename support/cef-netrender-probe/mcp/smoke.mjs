@@ -3,11 +3,18 @@
 //   node smoke.mjs list-only <server.mjs>
 //   node smoke.mjs fixture <server.mjs> <play.exe> <fixture dir> <output dir>
 //   node smoke.mjs package <server.mjs> <package dir> <output dir>
+//   node smoke.mjs disabled <server.mjs> <plain play.exe> <fixture dir> <output dir>
 //
 // fixture: --roves-game-dir=<fixture> --roves-mcp; discovery by PID, authentication refusal,
-//          state, evaluation (values, objects by value, errors, Promise refusal distinct
+//          state, the isMcpEnabled() marker (true and read-only in the entry script of the
+//          top-level document, absent in a same-origin child frame, no other bridge global),
+//          evaluation (values, objects by value, errors, Promise refusal distinct
 //          from a plain {}, non-JSON symbol refused, page CSP kept), click, key and
 //          text delivered to the page, clean exit and session removal.
+// disabled: the plain package's play.exe (no mcp\enabled) on the fixture, twice: without
+//          --roves-mcp, and with --roves-mcp while the bridge cannot start (LOCALAPPDATA
+//          points at a file). Both must load the game directly with the marker absent in the
+//          entry script and the child frame, publish no session record and exit 0.
 // package: the package's play.exe launched directly (the package marker turns MCP on);
 //          discovery without a PID, state and evaluation on the packaged game; interaction
 //          is required to succeed only if the startup screen was released (real GPU),
@@ -15,15 +22,17 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 
 const [mode, serverPath, ...rest] = process.argv.slice(2);
 const usage = "Usage: node smoke.mjs list-only <server.mjs> | fixture <server.mjs> <play.exe> " +
-  "<fixture dir> <output dir> | package <server.mjs> <package dir> <output dir>";
+  "<fixture dir> <output dir> | package <server.mjs> <package dir> <output dir> | " +
+  "disabled <server.mjs> <plain play.exe> <fixture dir> <output dir>";
+const MARKER = "__ROVES_MCP__";
 assert.ok(serverPath, usage);
 const TOOLS = ["click", "evaluate_script", "get_state", "press_key", "type_text"];
 const log = (line) => process.stdout.write(`roves-mcp-smoke ${line}\n`);
@@ -149,9 +158,9 @@ async function waitExit(game, ms) {
   return code;
 }
 
-function launch(exe, args, out) {
+function launch(exe, args, out, env = process.env) {
   mkdirSync(out, { recursive: true });
-  const game = spawn(exe, args, { cwd: out, stdio: "ignore", windowsHide: false });
+  const game = spawn(exe, args, { cwd: out, stdio: "ignore", windowsHide: false, env });
   game.on("error", (error) => log(`launch error ${error.message}`));
   log(`launched pid=${game.pid} ${exe}`);
   return game;
@@ -202,6 +211,27 @@ async function fixture([exe, fixtureDir, out]) {
       return { done: value.ready, value };
     });
     assert.deepEqual(page, { origin: record.origin, title: "roves mcp fixture", ready: true });
+    assert.equal(state.page_capability, "registered");
+
+    // isMcpEnabled(): the entry script (first page code) already saw a read-only true marker.
+    assert.deepEqual(await client.value("evaluate_script", { expression: "rovesMcpEntry" }), {
+      enabled: true,
+      descriptor: { value: true, writable: false, enumerable: false, configurable: false },
+    });
+    // Neither assignment nor delete changes it.
+    assert.equal(await client.value("evaluate_script", {
+      expression: `(() => { try { window.${MARKER} = false; } catch {} delete window.${MARKER}; ` +
+        `return window.${MARKER}; })()`,
+    }), true);
+    // Top-level document only: a same-origin child frame has no marker.
+    const frame = await until("child frame script", 20_000, async () => {
+      const value = await client.value("evaluate_script", {
+        expression: "document.getElementById('child-frame').contentWindow.rovesMcpFrame ?? null",
+      });
+      return { done: value !== null, value };
+    });
+    assert.deepEqual(frame, { enabled: false, own: false });
+    log("page capability marker checks passed");
     assert.equal((await evaluate("40 + 2")).value, 42);
     assert.equal((await evaluate("undefined")).value, null);
     const thrown = await evaluate("throw new Error('fixture exception')");
@@ -222,9 +252,10 @@ async function fixture([exe, fixtureDir, out]) {
     // The page's CSP (script-src 'self') still blocks eval inside an evaluation.
     assert.equal((await evaluate(
       "(() => { try { eval('1'); return 'allowed'; } catch (e) { return e.name; } })()")).value, "EvalError");
-    // Nothing of the bridge is visible to the page.
+    // Nothing of the bridge is visible to the page except the boolean marker.
     assert.deepEqual((await evaluate(
-      "Object.getOwnPropertyNames(globalThis).filter((k) => /roves|mcp|cef/i.test(k) && k !== 'rovesMcpFixture')")).value, []);
+      "Object.getOwnPropertyNames(globalThis).filter((k) => /roves|mcp|cef/i.test(k) && " +
+      "!['rovesMcpFixture', 'rovesMcpEntry'].includes(k))")).value, [MARKER]);
     log("evaluation checks passed");
 
     assert.equal((await client.value("click", { x: 100, y: 60 })).forwarded, 2);
@@ -273,6 +304,10 @@ async function fixture([exe, fixtureDir, out]) {
     assert.ok(!existsSync(recordPath(game.pid)), "session record left behind");
     const text = checkLog(gameLog, record, "Switch");
     assert.ok(!/ FAIL /.test(text), "FAIL line in the game log");
+    assert.match(text, /mcp page capability registered identifier=/);
+    assert.match(text, /game navigation url=http:\/\/127\.0\.0\.1:\d+\//);
+    assert.match(text, /message="roves-mcp-entry enabled=true"/);
+    assert.match(text, /message="roves-mcp-frame enabled=false"/);
     const late = await new Client(["--pid", String(game.pid)]).start();
     const gone = await late.tool("get_state");
     await late.stop();
@@ -336,6 +371,54 @@ async function packaged([pkg, out]) {
   }
 }
 
+/**
+ * Bridge off (no switch, plain package) and bridge unavailable (switch, but no session
+ * directory): the game loads directly and the marker is absent everywhere.
+ */
+async function disabled([exe, fixtureDir, out]) {
+  assert.ok(exe && fixtureDir && out, usage);
+  const marker = join(dirname(resolve(exe)), "mcp", "enabled");
+  assert.ok(!existsSync(marker), `${marker} exists: use the plain package's play.exe`);
+  const blocker = join(resolve(out), "localappdata-is-a-file");
+  mkdirSync(resolve(out), { recursive: true });
+  writeFileSync(blocker, "not a directory\n");
+  const cases = [
+    { name: "off", args: [], env: process.env },
+    { name: "unavailable", args: ["--roves-mcp"], env: { ...process.env, LOCALAPPDATA: blocker } },
+  ];
+  for (const { name, args, env } of cases) {
+    const dir = join(resolve(out), name);
+    const gameLog = join(dir, "game.log");
+    const game = launch(resolve(exe), [
+      `--roves-game-dir=${resolve(fixtureDir)}`, ...args, "--roves-auto-close-ms=8000",
+      "--roves-timeout-ms=60000", `--roves-log=${gameLog}`,
+      `--roves-cache-dir=${join(dir, "cache")}`, `--log-file=${join(dir, "cef-debug.log")}`,
+    ], dir, env);
+    try {
+      const code = await waitExit(game, 90_000);
+      const text = readFileSync(gameLog, "utf8");
+      log(`${name}: game exit code=${code}`);
+      assert.equal(code, 0);
+      assert.ok(!/ FAIL /.test(text), `${name}: FAIL line in the game log`);
+      assert.ok(!existsSync(recordPath(game.pid)), `${name}: session record published`);
+      assert.match(text, /load-end status=200 url=http:\/\/127\.0\.0\.1:\d+\/ ok=true/);
+      assert.match(text, /message="roves-mcp-entry enabled=false"/);
+      assert.match(text, /message="roves-mcp-frame enabled=false"/);
+      assert.ok(!/mcp (enabled|page capability|bootstrap)|game navigation/.test(text),
+        `${name}: bridge or bootstrap lines in the game log`);
+      if (name === "off") {
+        assert.ok(!/ mcp /.test(text), "off: mcp line in the game log");
+      } else {
+        assert.match(text, /mcp unavailable source=Switch error=/);
+      }
+      log(`${name}: marker absent, game loaded directly`);
+    } finally {
+      if (game.exitCode === null) game.kill();
+    }
+  }
+  log("disabled smoke passed");
+}
+
 if (mode === "list-only") {
   const client = await new Client().start();
   const missing = await client.tool("get_state");
@@ -346,6 +429,8 @@ if (mode === "list-only") {
   await fixture(rest);
 } else if (mode === "package") {
   await packaged(rest);
+} else if (mode === "disabled") {
+  await disabled(rest);
 } else {
   throw new Error(usage);
 }

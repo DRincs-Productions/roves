@@ -364,6 +364,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         closing_since: None,
         startup,
         mcp: None,
+        bootstrap: None,
     };
     probe.start_mcp();
     match probe.start(&video) {
@@ -1058,6 +1059,37 @@ struct Probe {
     /// Game mode with `Options::mcp` only: the local MCP bridge, dropped (session record
     /// removed) when the run starts closing.
     mcp: Option<crate::mcp::Bridge>,
+    /// Game mode with a running MCP bridge only: the browser starts on `about:blank` until
+    /// the page capability registration settled (`crate::mcp` module docs).
+    bootstrap: Option<Bootstrap>,
+}
+
+/// The `about:blank` document that precedes the game while the MCP page capability script is
+/// registered. Its navigation events are not the game's and are skipped; once the game
+/// committed on its origin, `about:blank` is an off-origin navigation again.
+struct Bootstrap {
+    /// The game URL, taken when the registration settled.
+    game_url: Option<String>,
+    /// An on-origin load-start or address change was seen.
+    game_committed: bool,
+}
+
+impl Bootstrap {
+    /// Whether `event` belongs to the bootstrap document. Load-end is skipped until the game's
+    /// own accepted load-end (`game_loaded`): CEF may report the bootstrap load-end late.
+    fn skips(&mut self, event: &NavigationEvent, origin: &str, game_loaded: bool) -> bool {
+        let blank = |url: &str| url == crate::mcp_rules::BOOTSTRAP_URL;
+        match event {
+            NavigationEvent::LoadStart { url } | NavigationEvent::AddressChanged { url } => {
+                if on_origin(origin, url) {
+                    self.game_committed = true;
+                }
+                !self.game_committed && blank(url)
+            },
+            NavigationEvent::LoadEnd { url, .. } => !game_loaded && blank(url),
+            _ => false,
+        }
+    }
 }
 
 /// How long the browser may take to close after `close()` before the probe gives up.
@@ -1362,6 +1394,16 @@ impl Probe {
                 "data:text/html;base64,{}",
                 base64::engine::general_purpose::STANDARD.encode(FIXTURE_HTML)
             ),
+        };
+        // MCP bridge running: the game URL waits for the page capability registration.
+        let url = if game && self.mcp.is_some() {
+            self.bootstrap = Some(Bootstrap {
+                game_url: Some(url),
+                game_committed: false,
+            });
+            crate::mcp_rules::BOOTSTRAP_URL.to_owned()
+        } else {
+            url
         };
         let producer = WindowsCefProducer::new(
             &runtime,
@@ -2165,6 +2207,13 @@ impl Probe {
         let mut startup_failures = Vec::new();
         for event in events {
             if let CefSurfaceEvent::Navigation(event) = event {
+                if let (Some(boot), Some(origin)) = (self.bootstrap.as_mut(), origin.as_deref())
+                    && boot.skips(&event, origin, self.game_loaded_at.is_some())
+                {
+                    self.log
+                        .line(format_args!("mcp bootstrap event skipped {event:?}"));
+                    continue;
+                }
                 match &event {
                     NavigationEvent::LoadEnd { http_status, url } if origin.is_some() => {
                         let origin = origin.as_deref().unwrap_or_default();
@@ -2879,11 +2928,42 @@ impl Probe {
         };
         if let Some(s) = self.state.as_mut() {
             bridge.poll_devtools(&mut s.producer);
+            // Bootstrap only: once the capability registration settled (registered or not),
+            // the game URL is loaded.
+            if let Some(boot) = self.bootstrap.as_mut()
+                && boot.game_url.is_some()
+                && let Some(outcome) = bridge.capability_step(&mut s.producer)
+            {
+                let url = boot.game_url.take().unwrap_or_default();
+                match outcome {
+                    Ok(identifier) => self.log.line(format_args!(
+                        "mcp page capability registered identifier={identifier}"
+                    )),
+                    Err(error) => self.log.line(format_args!(
+                        "mcp page capability unavailable error={error}"
+                    )),
+                }
+                match s.producer.navigate_to_url(&url) {
+                    Ok(()) => self.log.line(format_args!("game navigation url={url}")),
+                    Err(error) => {
+                        self.log
+                            .line(format_args!("FAIL game navigation url={url} error={error}"));
+                        self.failures += 1;
+                        self.fail_startup(StartupFailure::LoadError);
+                    },
+                }
+            }
         }
+        let Some(bridge) = self.mcp.as_mut() else {
+            return;
+        };
         for (call, reply) in bridge.take(MCP_CALLS_PER_TURN) {
             let method = call.method();
             let result = match call {
                 Call::State => Ok(self.mcp_state()),
+                Call::Evaluate(_) if self.mcp.as_ref().is_some_and(|m| m.capability_pending()) => {
+                    Err("the game page is not loaded yet".to_owned())
+                },
                 Call::Evaluate(expression) => {
                     if let (Some(bridge), Some(s)) = (self.mcp.as_mut(), self.state.as_mut()) {
                         bridge.evaluate(&mut s.producer, &expression, reply);
@@ -2926,6 +3006,13 @@ impl Probe {
             "url": mcp.and_then(|m| m.url.clone()),
             "title": mcp.and_then(|m| m.title.clone()),
             "loaded": self.game_loaded_at.is_some(),
+            // `isMcpEnabled()` marker: "pending" until registered, then whether the game
+            // document received it.
+            "page_capability": match mcp.and_then(|m| m.page_capability) {
+                None => "pending",
+                Some(true) => "registered",
+                Some(false) => "unavailable",
+            },
             "startup": startup,
             "input_ready": self.input_ready(),
             "window": s.map(|s| {

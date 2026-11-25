@@ -1,5 +1,6 @@
 //! Pure helpers of the optional local MCP bridge (README "Local MCP bridge"): limits, the
-//! session token check, the pipe name and the fixed key allow-list (std only, unit-tested
+//! session token check, the pipe name, the page capability script and the fixed key
+//! allow-list (std only, unit-tested
 //! stand-alone: `rustc --edition 2024 --test src/mcp_rules.rs`).
 
 /// Random bytes of the per-session token (hex-encoded in the session record).
@@ -18,6 +19,31 @@ pub(crate) const MAX_TEXT: usize = 256;
 pub(crate) const CONSOLE_RING: usize = 50;
 /// Longest console message kept for `state`, in characters.
 pub(crate) const CONSOLE_MESSAGE_MAX: usize = 512;
+
+/// Page-visible capability marker read by `@drincs/roves-api/core`'s `isMcpEnabled()`. Only
+/// the boolean `true` is ever exposed: no pipe name, token or other session detail.
+pub(crate) const PAGE_MARKER: &str = "__ROVES_MCP__";
+/// The browser's first document while the marker script is registered; the game URL is
+/// loaded only after that registration settled.
+pub(crate) const BOOTSTRAP_URL: &str = "about:blank";
+
+/// Document-start script registered through CDP `Page.addScriptToEvaluateOnNewDocument`
+/// (main world). Chromium runs it in every new document of the page target as soon as its
+/// main-world context exists, before any of the document's own scripts; it defines the marker
+/// only in the top-level frame and only on the game's own loopback origin, as a read-only,
+/// non-configurable `true`. `None` for anything but `http://127.0.0.1:<port>`, so the origin
+/// literal never needs escaping.
+pub(crate) fn page_capability_script(origin: &str) -> Option<String> {
+    let port = origin.strip_prefix("http://127.0.0.1:")?;
+    if port.is_empty() || port.len() > 5 || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!(
+        "(() => {{ if (window.top !== window || location.origin !== \"{origin}\") return; \
+         Object.defineProperty(window, \"{PAGE_MARKER}\", {{ value: true, writable: false, \
+         enumerable: false, configurable: false }}); }})();"
+    ))
+}
 
 /// Lower-case hex of `bytes`.
 pub(crate) fn hex(bytes: &[u8]) -> String {
@@ -170,6 +196,30 @@ mod tests {
         // An empty expected token never authenticates anything.
         assert!(!token_matches("", ""));
         assert!(!token_matches("", "\n"));
+    }
+
+    #[test]
+    fn the_page_script_is_bounded_to_the_top_level_loopback_origin() {
+        let script = page_capability_script("http://127.0.0.1:49152").unwrap();
+        assert!(script.contains("window.top !== window"));
+        assert!(script.contains("location.origin !== \"http://127.0.0.1:49152\""));
+        assert!(script.contains(&format!("\"{PAGE_MARKER}\", {{ value: true,")));
+        assert!(script.contains("writable: false"));
+        assert!(script.contains("configurable: false"));
+        // Nothing but the origin literal and the marker: no session detail can be embedded.
+        assert!(!script.contains("pipe") && !script.contains("token"));
+        for origin in [
+            "",
+            "http://127.0.0.1:",
+            "http://127.0.0.1:123456",
+            "http://127.0.0.1:80/",
+            "http://localhost:80",
+            "https://127.0.0.1:80",
+            "http://127.0.0.1:80\"",
+            "http://127.0.0.1:8a",
+        ] {
+            assert_eq!(page_capability_script(origin), None, "{origin:?}");
+        }
     }
 
     #[test]

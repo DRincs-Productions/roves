@@ -1,3 +1,26 @@
+## 2026-11-25 - CEF + SDL3 + wgpu candidate: `isMcpEnabled()` page capability
+
+Changed: `support/cef-netrender-probe/src/{app.rs,mcp.rs,mcp_rules.rs}`,
+`support/cef-netrender-probe/mcp/{smoke.mjs,README.md}`, new
+`support/cef-netrender-probe/mcp/fixture/{entry.js,frame.html,frame.js}`, fixture
+`index.html`, `support/cef-netrender-probe/README.md` ("Local MCP bridge"),
+`.github/workflows/cef-netrender-probe.yml` (new step "MCP disabled smoke on the fixture
+(WARP)", evidence paths), `TODO.md`. When the local MCP bridge started successfully, the
+player creates the browser on `about:blank`, registers a document-start script through CDP
+`Page.addScriptToEvaluateOnNewDocument` over welding's existing in-process DevTools channel,
+and loads the game URL only after the reply (10 s limit; failure loads the game without the
+marker). The script defines a read-only, non-configurable `window.__ROVES_MCP__ = true` only
+in the top-level document on the game's loopback origin; no session detail reaches the page.
+Bootstrap `about:blank` events are skipped until the game commits. Bridge off or unavailable:
+behaviour unchanged. Why CDP: welding e991684 keeps its `CefApp`/render-process handler
+private (no `OnContextCreated` hook, `extra_info` ignored); the minimal upstream path
+(a document-start script option in `CefSurfaceConfig`) is described in the probe README, no
+issue opened. Companion changes on separate branches, uncommitted: `roves-api`
+`feat/is-mcp-enabled` (`isMcpEnabled()`, tests, README; no version bump, not published),
+`roves-wiki` `feat/is-mcp-enabled` (`cef-windows`, `roves-api/core`). Local checks only
+(Rust type-check/clippy/fmt with `dox`, `mcp_rules` tests, roves-api tests); not built or run
+in CI. No `mach` flag, no roves-action/Packmaster change.
+
 ## 2026-11-25 - CEF + SDL3 + wgpu candidate: macOS accelerated-OSR feasibility gate (experiment only)
 
 Added: `support/cef-macos-gate/{Cargo.toml,Cargo.lock,README.md,src/main.rs,src/helper.rs,src/bundle.rs}`,

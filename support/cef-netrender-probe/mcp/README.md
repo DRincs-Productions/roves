@@ -45,6 +45,11 @@ no remote-debugging port. Each connection must first send a random 256-bit token
 game writes, with the pipe name, to `%LOCALAPPDATA%\Roves\mcp\<pid>.json` in your own
 profile; the file is removed when the game closes. Any program running as your Windows user
 can read that file and control the game, exactly as it could already control the game
-process itself. Nothing is added to the page: the game cannot see the bridge or the token.
+process itself. The page never sees the bridge's pipe or token. It only gets the read-only
+boolean `window.__ROVES_MCP__ === true` in the top-level game document while the bridge is
+running, set before the game's first script, so a game can call `isMcpEnabled()` of
+`@drincs/roves-api/core` (next release) to switch on development-only test hooks. It is
+`false` in a regular browser, without the bridge, if the bridge failed to start, and in
+iframes. It is a hint, not a security boundary.
 
 `node smoke.mjs` is the CI smoke test (see its header).

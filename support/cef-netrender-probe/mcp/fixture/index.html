@@ -3,13 +3,20 @@
 <!-- The page's own CSP: eval inside an MCP evaluation must stay blocked by it. -->
 <meta http-equiv="Content-Security-Policy" content="script-src 'self'">
 <title>roves mcp fixture</title>
+<!-- The game's entry script: classic and parser-blocking, the first page code to run. It
+     records the isMcpEnabled() marker as the page sees it before any other script. -->
+<script src="./entry.js"></script>
 <style>
   html, body { margin: 0; }
   #click-target { position: fixed; left: 0; top: 0; width: 200px; height: 120px;
                   margin: 0; border: 0; padding: 0; }
   #text-target { position: fixed; left: 0; top: 160px; width: 200px; height: 40px;
                  margin: 0; border: 0; padding: 0; }
+  #child-frame { position: fixed; left: 320px; top: 0; width: 40px; height: 40px;
+                 margin: 0; border: 0; padding: 0; }
 </style>
 <button id="click-target" type="button">click target</button>
 <input id="text-target" type="text" autocomplete="off">
+<!-- Same-origin child frame: the marker is for the top-level game document only. -->
+<iframe id="child-frame" src="./frame.html" title="child frame"></iframe>
 <script type="module" src="./game.js"></script>
