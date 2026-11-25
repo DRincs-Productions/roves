@@ -26,6 +26,10 @@ mod splash;
 mod stall;
 #[cfg(all(windows, feature = "steam"))]
 mod steam;
+/// `steam.rs` is shared with the macOS and Linux players, which name the host API
+/// `crate::host_api`.
+#[cfg(all(windows, feature = "steam"))]
+use game::host_api;
 #[cfg(windows)]
 mod timings;
 #[cfg(windows)]

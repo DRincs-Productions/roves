@@ -8,6 +8,9 @@
 //!
 //! `chrome-sandbox` is copied as an ordinary file. Making it the setuid sandbox helper
 //! (owner root, mode 4755) needs root and is done by the caller (CI) on purpose.
+//!
+//! Built with the `steam` feature (README "Steam"), it also copies steamworks-sys's
+//! `libsteam_api.so` next to the executable, where the gate's `$ORIGIN` run path finds it.
 
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,9 +24,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let exe = std::env::current_exe()?;
     let target = exe.parent().ok_or("bundle: executable has no directory")?;
     let gate = cef::build_util::linux::bundle(&output, target, "roves-cef-linux-gate")?;
+    #[cfg(feature = "steam")]
+    {
+        let lib = steam_lib::find(target, "libsteam_api.so")?;
+        std::fs::copy(&lib, output.join("libsteam_api.so"))?;
+        println!("copied {}", lib.display());
+    }
     println!("bundled: {}", gate.display());
     Ok(())
 }
+
+#[cfg(all(target_os = "linux", feature = "steam"))]
+#[path = "../../cef-macos-gate/src/steam_lib.rs"]
+mod steam_lib;
 
 #[cfg(not(target_os = "linux"))]
 fn main() {

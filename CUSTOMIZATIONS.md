@@ -1,3 +1,31 @@
+## 2026-11-25 - CEF macOS/Linux players: Steam variant, startup screen, bundle icon
+
+Added: `support/cef-macos-gate/{build.rs,packaging/icns.sh}`,
+`support/cef-macos-gate/src/{player_steam,startup_screen,steam_lib}.rs`,
+`support/cef-netrender-probe/build_wordmark.rs` (wordmark rasterizer moved out of the Windows
+player's `build.rs`). Changed: both gates' `Cargo.toml/lock` (`steam` feature with
+steamworks `=0.13.1`, `ab_glyph` build dependency), `build.rs`, `src/{main,player,bundle}.rs`;
+`support/cef-netrender-probe/{build.rs,src/lib.rs,src/steam.rs}` (shared by the three players);
+`.github/workflows/cef-{macos,linux}-gate.yml`; both gate READMEs; `TODO.md`.
+Why: parity of the macOS and Linux players with the Windows player for v0.9.0. Packaged games
+show the Windows startup screen (logo, MetalMania wordmark, loading bar) until the first game
+frame instead of black (`gate: startup screen released`). The macOS `bundle` takes
+`--resources <dir>` so cef's bundler installs `<dir>/mac/roves-cef-macos-gate.icns` and sets
+`CFBundleIconFile`; `packaging/icns.sh` makes it from a square PNG with `sips`/`iconutil`.
+The `steam` feature reuses the Windows player's Steamworks client behind the host API
+(never fatal when Steam is missing; shut down before CEF) and `bundle` copies the
+redistributable: `libsteam_api.dylib` into `Contents/MacOS` (main executable only, via its
+`@loader_path` install name) or `libsteam_api.so` next to the Linux gate (`$ORIGIN`). CI:
+sparse checkouts gain `resources/fonts` (and the host API fixture on Linux); the standard
+packages must stay Steam-free; packaged runs require the startup-screen lines; macOS checks
+the `.icns` and Info.plist key, builds a Steam `.app` (otool: main executable links
+`@loader_path/libsteam_api.dylib`, no helper does) and runs it without Steam (`steam
+unavailable`, same exit as the standard run); Linux builds a Steam package (`NEEDED`, `ldd`
+from `$ORIGIN`, `chrome-sandbox` independent) and runs the host API fixture under the pinned
+GSE emulator (same tag and SHA-256 as `steamworks-gate.yml`, App ID 480: achievements, stats,
+store, Steamworks shut down before CEF). New artifacts `cef-macos-gate-arm64-steam` and
+`cef-linux-gate-x64-steam`. Real Steam client, overlay and signing stay manual/open.
+
 ## 2026-11-25 - CEF players: static first screens release the startup screen
 
 Changed: `support/cef-netrender-probe/src/{app.rs,game_rules.rs}`,

@@ -3,19 +3,36 @@
 //! [`SteamApi`]. Glue only: every method is one steamworks-rs call, as in the legacy
 //! `ports/servoshell/desktop/protocols/steam.rs` (git 27ca0811d6d).
 //!
+//! Shared by the three players: the Windows player compiles it as `crate::steam`, the macOS
+//! and Linux players through `#[path]` (their `steam` feature); only the redistributable's
+//! file name differs per platform.
+//!
 //! `Client` is `Send + Sync`; calls from the server's blocking threads are serialized by
 //! [`SteamHandle`], callbacks are dispatched from the SDL main loop and the client is dropped
-//! (`SteamAPI_Shutdown`) before CEF shuts down. `steam_api64.dll` is delay-loaded (build.rs),
-//! so CEF's sandboxed child processes never load it and a package without it still starts.
+//! (`SteamAPI_Shutdown`) before CEF shuts down. Loading of the redistributable:
+//! - Windows: `steam_api64.dll` is delay-loaded (build.rs), so CEF's sandboxed child
+//!   processes never load it and a package without it still starts.
+//! - macOS: `libsteam_api.dylib` sits in the `.app`'s `Contents/MacOS`, where its install
+//!   name `@loader_path/libsteam_api.dylib` resolves from the main executable. CEF's
+//!   subprocesses are the separate helper executables, which do not link it.
+//! - Linux: `libsteam_api.so` sits next to the executable, found through its `$ORIGIN` run
+//!   path. CEF re-executes the same executable for its subprocesses, so the dynamic loader
+//!   maps the library into them too (before the sandbox engages); they never call it, and
+//!   Steamworks is initialized only in the browser process.
 
 use std::{path::Path, sync::Arc};
 
 use steamworks::{AppId, Client, OverlayToStoreFlag, SteamAPIInitError};
 
-use crate::game::host_api::{SteamApi, SteamHandle};
+use crate::host_api::{SteamApi, SteamHandle};
 
-/// The Steamworks redistributable, next to `play.exe` in a Steam package.
+/// The Steamworks redistributable, next to the executable in a Steam package.
+#[cfg(windows)]
 const STEAM_API_DLL: &str = "steam_api64.dll";
+#[cfg(target_os = "macos")]
+const STEAM_API_DLL: &str = "libsteam_api.dylib";
+#[cfg(target_os = "linux")]
+const STEAM_API_DLL: &str = "libsteam_api.so";
 /// Development App ID file next to the executable (Steam's own convention).
 const APP_ID_FILE: &str = "steam_appid.txt";
 
@@ -24,7 +41,8 @@ const APP_ID_FILE: &str = "steam_appid.txt";
 /// (`SteamAppId`) when present, otherwise a `steam_appid.txt` next to the executable, otherwise
 /// whatever `SteamAPI_Init` finds itself.
 pub(crate) fn init(exe_dir: &Path) -> Result<(Arc<SteamHandle>, u32), String> {
-    // The delay-load stub would fault on the first call without the DLL.
+    // Windows: the delay-load stub would fault on the first call without the DLL. macOS and
+    // Linux: the dynamic loader already required it; the check keeps the reason explicit.
     if !exe_dir.join(STEAM_API_DLL).is_file() {
         return Err(format!("{STEAM_API_DLL} missing next to the executable"));
     }

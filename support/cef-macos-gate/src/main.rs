@@ -27,7 +27,8 @@
 #[path = "../../cef-netrender-probe/src/game_rules.rs"]
 mod game_rules;
 /// The players' shared host API (`/__roves/<module>/<cmd>` on the loopback origin; Windows
-/// player README "Host API"): `core`, `saves` and `steam` (always "unavailable" here). The
+/// player README "Host API"): `core`, `saves` and `steam` ("unavailable" without the `steam`
+/// feature or without a running Steam client). The
 /// `window.__ROVES__` page marker is registered before the game document (`session.rs`), so
 /// `isAvailable()` of roves-api is `true` in the packaged game.
 #[cfg(target_os = "macos")]
@@ -58,6 +59,10 @@ mod mcp_rules;
 mod page_init;
 #[cfg(target_os = "macos")]
 mod player;
+/// Steamworks lifetime (start before CEF, callbacks per turn, shutdown before CEF), shared
+/// with the Linux gate.
+#[cfg(target_os = "macos")]
+mod player_steam;
 #[cfg(target_os = "macos")]
 mod profile;
 /// The stage-1 window probe's loopback server (axum + tower-http `ServeDir` on 127.0.0.1),
@@ -67,6 +72,19 @@ mod profile;
 mod server;
 #[cfg(target_os = "macos")]
 mod session;
+/// The Windows player's startup-screen branding (Roves logo, MetalMania wordmark from
+/// build.rs); its window-icon surface and failure-screen variants are unused here.
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../../cef-netrender-probe/src/splash.rs"]
+mod splash;
+/// Startup screen until the first game frame (README "Startup screen").
+#[cfg(target_os = "macos")]
+mod startup_screen;
+/// `steam` feature: the Windows player's Steamworks client (README "Steam").
+#[cfg(all(target_os = "macos", feature = "steam"))]
+#[path = "../../cef-netrender-probe/src/steam.rs"]
+mod steam;
 /// The players' shared window icon (Roves logo, project `icon.png`).
 #[cfg(target_os = "macos")]
 #[path = "../../cef-netrender-probe/src/window_icon.rs"]
@@ -255,6 +273,12 @@ mod gate {
         // `<profile root>/saves` with the persistent profile, unavailable when isolated;
         // `exit`/`clear_content_cache` end the drive loop like a window close.
         let game_exit = std::sync::Arc::new(std::sync::OnceLock::<&'static str>::new());
+        // `steam` feature, packaged game: the run's one Steamworks client, before CEF starts
+        // (README "Steam"), with libsteam_api.dylib and steam_appid.txt in Contents/MacOS;
+        // shut down after the browser closed, before CEF shuts down.
+        let steam = game
+            .as_ref()
+            .and_then(|_| exe.parent().and_then(crate::player_steam::start));
         let saves_dir = profile
             .as_ref()
             .map(|p| p.root.join(crate::game_rules::PLAYER_SAVES_DIR));
@@ -266,8 +290,7 @@ mod gate {
                 request_exit: std::sync::Arc::new(move |cmd| {
                     let _ = exit.set(cmd);
                 }),
-                // Steam is a Windows player feature only (README "Steam").
-                steam: None,
+                steam: steam.clone(),
             });
             match saves {
                 Ok(dir) => println!("gate: host api saves dir={}", dir.display()),
@@ -398,6 +421,10 @@ mod gate {
                 );
                 let code = {
                     let mut gpu = Gpu::new(&window)?;
+                    if server.is_some() {
+                        // README "Startup screen": until the first game frame.
+                        gpu.show_startup_screen();
+                    }
                     let result = match server.as_ref() {
                         Some(server) => {
                             let sdl_events = sdl.event().map_err(|e| format!("SDL event: {e}"))?;
@@ -412,6 +439,7 @@ mod gate {
                                 &cache.join(crate::profile::GAME_PROFILE_DIR),
                                 timeout,
                                 &game_exit,
+                                steam.as_deref(),
                             )
                         },
                         None => drive_fixture(&runtime, &window, &mut events, &gpu, timeout),
@@ -435,6 +463,8 @@ mod gate {
                 1
             })
         };
+        // Steamworks first: no Steam call outlives CEF (README "Steam").
+        crate::player_steam::shutdown(steam.as_deref());
         drop(runtime);
         println!("gate: cef shutdown complete");
         let code = if stop_server(server) { code } else { 1 };
@@ -514,6 +544,8 @@ mod gate {
         blitter: wgpu::util::TextureBlitter,
         pub(crate) host: HostWgpuContext,
         pub(crate) failed: Arc<AtomicBool>,
+        /// Packaged game: shown instead of black until the first game frame.
+        startup: Option<crate::startup_screen::StartupScreen>,
     }
 
     impl Gpu {
@@ -586,6 +618,7 @@ mod gate {
                 blitter,
                 host,
                 failed,
+                startup: None,
             })
         }
 
@@ -602,10 +635,32 @@ mod gate {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.host.device, &self.config);
+            if let Some(startup) = self.startup.as_mut() {
+                startup.resize(&self.host.device, &self.host.queue, width, height);
+            }
         }
 
-        /// Shows the latest imported frame in the SDL3 window (stretched) or black before
-        /// the first frame. Returns whether a texture was presented (vsync then paces the
+        /// Packaged game: the startup screen replaces black before the first game frame.
+        pub(crate) fn show_startup_screen(&mut self) {
+            let mut startup = crate::startup_screen::StartupScreen::new(self.config.format);
+            startup.resize(
+                &self.host.device,
+                &self.host.queue,
+                self.config.width,
+                self.config.height,
+            );
+            self.startup = Some(startup);
+        }
+
+        /// The first game frame is shown: the startup screen's texture is released.
+        pub(crate) fn hide_startup_screen(&mut self) {
+            if self.startup.take().is_some() {
+                println!("gate: startup screen released");
+            }
+        }
+
+        /// Shows the latest imported frame in the SDL3 window (stretched) or, before the
+        /// first frame, the startup screen (packaged game) or black (fixture). Returns whether a texture was presented (vsync then paces the
         /// loop).
         pub(crate) fn present(&self, frame: Option<&ImportedTexture>) -> bool {
             let output = match self.surface.get_current_texture() {
@@ -626,12 +681,19 @@ mod gate {
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                         label: Some("gate present"),
                     });
-            match frame {
-                Some(frame) => {
+            match (frame, self.startup.as_ref()) {
+                (Some(frame), _) => {
                     self.blitter
                         .copy(&self.host.device, &mut encoder, &frame.view, &target)
                 },
-                None => {
+                (None, Some(startup)) => startup.draw(
+                    &self.host.device,
+                    &self.host.queue,
+                    &mut encoder,
+                    &self.blitter,
+                    &target,
+                ),
+                (None, None) => {
                     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("gate clear"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {

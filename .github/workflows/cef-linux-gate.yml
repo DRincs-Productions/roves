@@ -20,7 +20,11 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 Linux feasibility gate
 # persistent per-install profile (same origin across launches) and under contention (README
 # "Packaged game", "Saves and the player profile"). On the hosted runner (lavapipe) the game
 # frames are CEF's software output: the packaged run must show and read back a multi-colour
-# game frame with `evidence=software` (exit 0); GPU import needs a real GPU.
+# game frame with `evidence=software` (exit 0); GPU import needs a real GPU. Packaged runs
+# require the startup screen released by the first game frame (README "Startup screen"). A
+# second package built with the `steam` feature (README "Steam") ships libsteam_api.so next
+# to the gate ($ORIGIN) and runs the host API fixture once under the pinned GSE emulator
+# (App ID 480, offline; emulation, not the real Steam client).
 
 on:
   push:
@@ -49,6 +53,17 @@ on:
       - 'support/cef-macos-gate/src/key_rules.rs'
       # The player fixture (page marker, saves, input, audio).
       - 'support/cef-macos-gate/player-fixture/**'
+      # Startup screen (the macOS gate's module, the Windows player's splash.rs branding,
+      # build.rs wordmark and its font) and the `steam` feature (the macOS gate's Steamworks
+      # lifetime and redistributable lookup, the Windows player's client and host API fixture).
+      - 'support/cef-macos-gate/src/startup_screen.rs'
+      - 'support/cef-macos-gate/src/player_steam.rs'
+      - 'support/cef-macos-gate/src/steam_lib.rs'
+      - 'support/cef-netrender-probe/src/splash.rs'
+      - 'support/cef-netrender-probe/build_wordmark.rs'
+      - 'resources/fonts/MetalMania-Regular.ttf'
+      - 'support/cef-netrender-probe/src/steam.rs'
+      - 'support/cef-netrender-probe/host-api-fixture/**'
       - '.github/workflows/cef-linux-gate.yml'
   workflow_dispatch:
 
@@ -78,6 +93,8 @@ jobs:
             support/cef-netrender-probe/src
             support/cef-macos-gate/src
             support/cef-macos-gate/player-fixture
+            support/cef-netrender-probe/host-api-fixture
+            resources/fonts
           sparse-checkout-cone-mode: true
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -169,6 +186,9 @@ jobs:
           ldd "$gate" | grep -q "libcef.so => $out/libcef.so" \
             || { ldd "$gate"; echo "::error::libcef.so not resolved next to the gate"; exit 1; }
           if ldd "$gate" | grep -q 'not found'; then ldd "$gate"; echo "::error::unresolved libraries"; exit 1; fi
+          # The standard package is Steam-free (README "Steam").
+          test ! -e "$out/libsteam_api.so" || { echo "::error::standard package contains libsteam_api.so"; exit 1; }
+          if readelf -d "$gate" | grep -q libsteam_api; then echo "::error::standard executable needs libsteam_api"; exit 1; fi
           # Chromium's setuid layer 1 requires chrome-sandbox owned by root with mode 4755
           # (sandbox/linux/suid/client/setuid_sandbox_host.cc). This is root-only packaging,
           # done here on purpose; the gate itself never runs as root.
@@ -210,6 +230,8 @@ jobs:
             fail "gate reported FAIL (exit $code)"
           fi
           need '^gate: mode=fixture$'
+          # The startup screen is a packaged-game feature only (README "Startup screen").
+          if grep -q -E '^gate: (startup |wordmark )' "$log"; then fail "fixture gate built a startup screen"; fi
           need '^gate: cef initialized sandbox=Sandboxed ozone=x11'
           need '^gate: sdl video driver=x11'
           need '^gate: adapter .*backend=Vulkan'
@@ -350,7 +372,7 @@ jobs:
             '^gate: cache removed$' "^gate: shutdown complete exit=$code$" "^gate: exit code=$code$")
           case "$code" in
             0)
-              expected=("${common[@]}"
+              expected=("${common[@]}" '^gate: startup screen released$'
                 '^gate: first game frame after load-end ms=[0-9]+ size=[0-9]+x[0-9]+ format=(Bgra|Rgba)8UnormSrgb '
                 '^gate: test auto-close scheduled delay_ms=8000 anchor=first-frame$' '^gate: test auto-close pushed SDL quit$'
                 '^gate: loop end .* presented=[1-9][0-9]* loaded=true game_frame=true close=quit ' '^gate: close requested source=quit$'
@@ -375,6 +397,14 @@ jobs:
             at="$(tail -n "+$((last + 1))" "$log" | grep -n -m1 -E -- "$pattern" | cut -d: -f1 || true)"
             if [ -z "$at" ]; then echo "::error::missing or out of order: $pattern"; failed=1; else last=$((last + at)); fi
           done
+          # Startup screen branding (README "Startup screen"), built before the first present;
+          # the window icon falls back to the embedded Roves logo (no icon.png in this package).
+          for pattern in '^gate: startup logo decoded size=[0-9]+x[0-9]+$' '^gate: wordmark rendered size=[0-9]+x[0-9]+ font=MetalMania$' \
+              '^gate: window icon source=(project|roves) .*set=true$'; do
+            grep -q -E -- "$pattern" "$log" || { echo "::error::missing: $pattern"; failed=1; }
+          done
+          # The standard package has no Steam code: no Steam line at all.
+          if grep -q '^gate: steam ' "$log"; then echo "::error::standard package logged $(grep -m1 '^gate: steam ' "$log")"; failed=1; fi
           # No remote-debugging/DevTools endpoint: the player must not rely on one.
           if grep -q 'DevTools listening' "$log"; then echo "::error::a DevTools endpoint was opened"; failed=1; fi
           if grep -q -E '^gate: player (profile root=|origin-port stored|profile kept)' "$log"; then
@@ -587,6 +617,11 @@ jobs:
             '^gate: producer created mode=(AcceleratedPaint|CpuPaint) size=[0-9]+x[0-9]+ url=about:blank profile=.+/cef/game-profile elapsed_ms=' \
             '^gate: page markers registered identifier=.+ mcp=false$' "^gate: game navigation url=$o/$" \
             "^gate: load-end status=200 url=$o/ ok=true$" '^gate: game loaded elapsed_ms='
+          # README "Startup screen": released by the first game frame (none on exit 2).
+          if [ "$code" = 0 ]; then
+            ordered startup-screen "^gate: load-end status=200 url=$o/ ok=true$" '^gate: startup screen released$' \
+              '^gate: first game frame (after load-end|settled) '
+          fi
           ordered marker "${src}roves-ci-marker available=true\"$" \
             "${src}roves-ci-save os_type=[a-z]+ available=true write=true read=hello-roves\"$"
           ordered title '^gate: title "roves ci player fixture"$'
@@ -625,12 +660,163 @@ jobs:
           sleep 2
           if pgrep -fl "roves-cef-linux-gate"; then echo "::error::player fixture processes still running after exit"; failed=1; fi
           test "$failed" = 0
+      # `steam` feature (README "Steam"): the same crate rebuilt with --features steam in the
+      # same target directory (only the gate crate recompiles; the standard package above is
+      # already laid out and stays Steam-free) and bundled into its own directory with the same
+      # packaged template. bundle copies steamworks-sys's libsteam_api.so next to the
+      # executable, where the $ORIGIN run path resolves it (also for the zygote and the other
+      # CEF subprocesses, which re-execute the same binary; chrome-sandbox is CEF's own
+      # setuid helper and must not depend on it).
+      - name: build and bundle the Steam variant (release, --features steam)
+        id: steam_bundle
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          (cd support/cef-linux-gate && cargo build --locked --release --bins --features steam) 2>&1 \
+            | tee "$RUNNER_TEMP/gate-steam-build.log"
+          test "${PIPESTATUS[0]}" = 0
+          out="$RUNNER_TEMP/gate-app-steam"
+          "$CARGO_TARGET_DIR/release/bundle" "$out" 2>&1 | tee -a "$RUNNER_TEMP/gate-steam-build.log"
+          test "${PIPESTATUS[0]}" = 0
+          gate="$out/roves-cef-linux-gate"
+          test -x "$gate" || { echo "::error::Steam package has no gate executable"; exit 1; }
+          test -f "$out/libsteam_api.so" || { echo "::error::Steam package lacks libsteam_api.so"; exit 1; }
+          real="$(find "$CARGO_TARGET_DIR/release/build" -path '*steamworks-sys-*/out/libsteam_api.so' | head -1)"
+          cmp -s "$real" "$out/libsteam_api.so" || { echo "::error::packaged libsteam_api.so is not steamworks-sys's redistributable"; exit 1; }
+          readelf -d "$gate" | grep NEEDED | grep -q -F '[libsteam_api.so]' \
+            || { readelf -d "$gate" | grep NEEDED; echo "::error::gate does not need libsteam_api.so"; exit 1; }
+          readelf -d "$gate" | grep -E 'RUNPATH|RPATH' | grep -q '\$ORIGIN' || { echo "::error::no \$ORIGIN run path"; exit 1; }
+          ldd "$gate" | grep -q "libsteam_api.so => $out/libsteam_api.so" \
+            || { ldd "$gate"; echo "::error::libsteam_api.so not resolved next to the gate"; exit 1; }
+          ldd "$gate" | grep -q "libcef.so => $out/libcef.so" || { ldd "$gate"; echo "::error::libcef.so not resolved next to the gate"; exit 1; }
+          if ldd "$gate" | grep -q 'not found'; then ldd "$gate"; echo "::error::unresolved libraries"; exit 1; fi
+          if readelf -d "$out/chrome-sandbox" | grep -q libsteam_api; then echo "::error::chrome-sandbox depends on libsteam_api"; exit 1; fi
+          echo "::notice::Steam package: $(ldd "$gate" | grep libsteam_api | sed 's/^[[:space:]]*//'); chrome-sandbox does not need it"
+          sudo chown root:root "$out/chrome-sandbox"
+          sudo chmod 4755 "$out/chrome-sandbox"
+          # The same packaged template as the standard package.
+          cp -a "$GATE_DIR/game" "$out/game"
+          diff -r "$GATE_DIR/game" "$out/game" || { echo "::error::Steam package game differs from the standard package"; exit 1; }
+          echo "STEAM_GATE=$gate" >> "$GITHUB_ENV"
+          echo "STEAM_GATE_DIR=$out" >> "$GITHUB_ENV"
+      # Steam variant under EMULATION, never evidence about the real Steam client (the Windows
+      # player's step in cef-netrender-probe.yml): the pinned, SHA-256-checked Goldberg/GSE
+      # Linux release (gbe_fork, LGPL-3.0; same tag, asset and digest as steamworks-gate.yml's
+      # emulation job) replaces libsteam_api.so offline with Valve's public test App ID 480.
+      # The Steam package is changed in place for one launch and restored afterwards (the
+      # uploaded package keeps the redistributable and the template): the game is
+      # support/cef-netrender-probe/host-api-fixture with a fresh persistent profile (saves
+      # need it), which calls steam is_available -> true, get_app_id -> 480,
+      # unlock/is_unlocked ACH_WIN_ONE_GAME, set/get stat NumGames, store_stats (ids declared
+      # in the emulator's steam_settings), writes a save, then core/exit. Steamworks must shut
+      # down before CEF. Setuid layer 1, as the other packaged runs.
+      - name: Steam variant under the GSE emulator (emulation, lavapipe)
+        if: (success() || failure()) && steps.steam_bundle.outcome == 'success'
+        shell: bash
+        env:
+          GSE_TAG: release-2026_09_27
+          GSE_ASSET: emu-linux-release.tar.bz2
+          GSE_SHA256: f3e08366fb8052e55d9ca29ef5bb1f80afb66d59e96879e5900aac8a6d86c7b9
+        run: |
+          out="$RUNNER_TEMP/steam-emulation"
+          pkg="$STEAM_GATE_DIR"
+          test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
+          mkdir -p "$out/gse" "$out/home" "$out/xdg-config"
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o "$out/gse.tar.bz2" \
+            "https://github.com/Detanup01/gbe_fork/releases/download/$GSE_TAG/$GSE_ASSET"
+          echo "$GSE_SHA256  $out/gse.tar.bz2" | sha256sum -c -
+          tar xjf "$out/gse.tar.bz2" -C "$out/gse"
+          emu="$(find "$out/gse" -path '*regular*' -path '*x64*' -name libsteam_api.so | head -1)"
+          gen="$(find "$out/gse" -name 'generate_interfaces*x64*' -type f | head -1)"
+          test -n "$emu" || { echo "::error::emulator libsteam_api.so (regular/x64) not found in $GSE_ASSET"; find "$out/gse" -maxdepth 4; exit 1; }
+          test -n "$gen" || { echo "::error::generate_interfaces x64 not found in $GSE_ASSET"; find "$out/gse" -maxdepth 4; exit 1; }
+          real="$out/libsteam_api.redistributable.so"
+          cp "$pkg/libsteam_api.so" "$real"
+          # steam_interfaces.txt from the redistributable the gate links (steamworks-sys 0.13.0).
+          work="$out/interfaces"
+          mkdir -p "$work"
+          cp "$real" "$work/libsteam_api.so"
+          cp "$gen" "$work/generate_interfaces"
+          chmod +x "$work/generate_interfaces"
+          ( cd "$work" && ./generate_interfaces libsteam_api.so ) > /dev/null
+          test -s "$work/steam_interfaces.txt" || { echo "::error::steam_interfaces.txt not generated"; ls -la "$work"; exit 1; }
+          # One launch on a throw-away state of the Steam package, restored on exit.
+          game="$pkg/game"
+          settings="$pkg/steam_settings"
+          mv "$game" "$out/template-game"
+          restore() {
+            rm -rf "$game" "$settings" "$pkg/steam_appid.txt"
+            mv "$out/template-game" "$game"
+            cp "$real" "$pkg/libsteam_api.so"
+          }
+          trap restore EXIT
+          cp -a support/cef-netrender-probe/host-api-fixture "$game"
+          mkdir -p "$settings"
+          cp "$work/steam_interfaces.txt" "$settings/"
+          # Valve's public test app: next to the executable (the player's dev convention) and
+          # in steam_settings (the emulator's). The emulator stays offline.
+          printf '480' > "$pkg/steam_appid.txt"
+          printf '480' > "$settings/steam_appid.txt"
+          printf '[main::connectivity]\ndisable_networking=1\n' > "$settings/configs.main.ini"
+          printf '%s\n' '[{"name":"ACH_WIN_ONE_GAME","displayName":"Winner","description":"CI","hidden":"0","icon":"","icongray":""}]' > "$settings/achievements.json"
+          printf '%s\n' '[{"name":"NumGames","type":"int","default":"0","global":"0"}]' > "$settings/stats.json"
+          cp "$emu" "$pkg/libsteam_api.so"
+          if cmp -s "$real" "$pkg/libsteam_api.so"; then echo "::error::emulator equals the redistributable"; exit 1; fi
+          echo "::notice::emulation package: GSE $GSE_TAG regular/x64 libsteam_api.so $(sha256sum "$emu" | cut -c1-16); redistributable $(sha256sum "$real" | cut -c1-16)"
+          ldd "$STEAM_GATE" | grep libsteam_api
+          if pgrep -fl "roves-cef-linux-gate"; then echo "::error::gate processes left by a previous step"; exit 1; fi
+          log="$out/steam-emulation.log"
+          set +e
+          # The fixture closes itself (core/exit) about 1.5 s after its load; the 30 s
+          # auto-close after the first game frame is only a backstop.
+          (cd "$out" && HOME="$out/home" XDG_CONFIG_HOME="$out/xdg-config" ROVES_GATE_TIMEOUT_SECS=60 \
+            ROVES_GATE_AUTO_CLOSE_MS=30000 timeout -k 10 150 xvfb-run -a -s "-screen 0 1280x800x24" \
+            "$STEAM_GATE" > "$log" 2>&1)
+          code=$?
+          set -e
+          grep '^gate:' "$log" || true
+          failed=0
+          # Closing by the game needs a first game frame (0 with software frames on lavapipe).
+          test "$code" = 0 || { echo "::error::steam emulation run: exit $code (expected 0)"; failed=1; }
+          origin="$(sed -n 's|^gate: mode=packaged-game dir=.* origin=||p' "$log" | head -1)"
+          test -n "$origin" || { echo "::error::missing: packaged-game mode line with the loopback origin"; exit 1; }
+          o="${origin//./\\.}"
+          src="^gate: console level=[0-9]+ source=$o/main\\.js:[0-9]+ message=\""
+          last=0
+          for pattern in '^gate: steam initialized app_id=480$' "^gate: mode=packaged-game dir=.*/game origin=$o$" \
+              '^gate: player profile=persistent cache=' '^gate: cef initialized sandbox=Sandboxed ozone=x11 cache=' \
+              "^gate: load-end status=200 url=$o/ ok=true$" '^gate: startup screen released$' \
+              '^gate: close requested by the game command=exit$' '^gate: browser closed elapsed_ms=' \
+              '^gate: steam shutdown complete$' '^gate: cef shutdown complete$' '^gate: loopback stopped$' \
+              "^gate: exit code=$code$"; do
+            at="$(tail -n "+$((last + 1))" "$log" | grep -n -m1 -E -- "$pattern" | cut -d: -f1 || true)"
+            if [ -z "$at" ]; then echo "::error::steam emulation run: missing or out of order: $pattern"; failed=1; else last=$((last + at)); fi
+          done
+          # Console lines travel on their own CEF IPC path: required, not ordered.
+          for pattern in "${src}roves-host-api steam available=true app_id=480 unlock=true unlocked=true set=true stat=3 store=true\"$" \
+              "${src}roves-host-api phase=1 write=true read=hello-roves\"$"; do
+            grep -q -E -- "$pattern" "$log" || { echo "::error::steam emulation run: missing $pattern"; failed=1; }
+          done
+          for pattern in '^gate: FAIL' '^gate: steam unavailable' 'roves-host-api (error|marker missing|saves unavailable)' \
+              'violates the following Content Security Policy' 'DevTools listening'; do
+            if grep -q -E -- "$pattern" "$log"; then echo "::error::steam emulation run: unexpected $(grep -m1 -E -- "$pattern" "$log")"; failed=1; fi
+          done
+          sleep 2
+          if pgrep -fl "roves-cef-linux-gate"; then echo "::error::steam emulation processes still running after exit"; failed=1; fi
+          if [ "$failed" = 0 ]; then
+            echo "::notice::Steam host API verified under EMULATION (GSE $GSE_TAG, App ID 480), not against the real Steam client"
+          fi
+          test "$failed" = 0
       - name: archive the gate directory
         if: always() && env.GATE_DIR != ''
         shell: bash
         # tar keeps the modes; extracting as a normal user drops the root owner and the setuid
         # bit of chrome-sandbox, which must be re-applied (README "Running elsewhere").
         run: tar -C "$GATE_DIR/.." -czf "$RUNNER_TEMP/roves-cef-linux-gate-x64.tar.gz" "$(basename "$GATE_DIR")"
+      - name: archive the Steam package
+        if: always() && env.STEAM_GATE_DIR != ''
+        shell: bash
+        run: tar -C "$STEAM_GATE_DIR/.." -czf "$RUNNER_TEMP/roves-cef-linux-gate-x64-steam.tar.gz" "$(basename "$STEAM_GATE_DIR")"
       - name: upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -639,6 +825,8 @@ jobs:
           path: |
             ${{ runner.temp }}/gate-build.log
             ${{ runner.temp }}/gate-run-*.log
+            ${{ runner.temp }}/gate-steam-build.log
+            ${{ runner.temp }}/steam-emulation/steam-emulation.log
             ${{ runner.temp }}/player-run.log
             ${{ runner.temp }}/player-profile/*.log
             ${{ runner.temp }}/player-fixture/*.log
@@ -657,4 +845,12 @@ jobs:
         with:
           name: cef-linux-gate-x64
           path: ${{ runner.temp }}/roves-cef-linux-gate-x64.tar.gz
+          if-no-files-found: warn
+      # The `steam` feature's package (libsteam_api.so next to the gate, same packaged game).
+      - name: upload the Steam package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-linux-gate-x64-steam
+          path: ${{ runner.temp }}/roves-cef-linux-gate-x64-steam.tar.gz
           if-no-files-found: warn

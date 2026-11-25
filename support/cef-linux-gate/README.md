@@ -222,14 +222,52 @@ build instead of the fixture (`src/player.rs`), the Linux counterpart of the mac
   `gate: PASS packaged game ... evidence=gpu|software`: `gpu` with a DMA-BUF import device,
   `software` on CEF's software output (the hosted runner's lavapipe, see "Software paint").
 - Console messages are logged (first 200, 300 characters each) and counted by level; popups
-  are refused by welding and reported. No remote-debugging endpoint is opened and **no
-  Steam code exists** (later slice). The host API, the `window.__ROVES__` marker, input,
-  window and audio follow the macOS gate's README section "Host API marker, input, window
-  and audio" (same `src/session.rs`, through `#[path]`); the project icon is `icon.png`
-  next to the executable, set on the SDL3 X11 window (`_NET_WM_ICON`).
+  are refused by welding and reported. No remote-debugging endpoint is opened. Steam only in
+  the `steam` feature build (section "Steam"). The host API, the `window.__ROVES__` marker,
+  input, window and audio follow the macOS gate's README section "Host API marker, input,
+  window and audio" (same `src/session.rs`, through `#[path]`); the project icon: section
+  "Application icon". Startup screen: section "Startup screen".
 - Test-only: `ROVES_GATE_AUTO_CLOSE_MS` pushes one SDL quit event that long after the first
   imported game frame, or after the accepted load-end when there is no import device (where
   no frame can ever be shown), so CI exercises the ordinary close path.
+
+## Startup screen
+
+The macOS gate's `src/startup_screen.rs` compiled through `#[path]` (README of that gate,
+section "Startup screen", for content and rules): packaged-game mode only, the Windows
+player's dark background, Roves logo, MetalMania wordmark (rasterized by this gate's
+`build.rs` with the shared `support/cef-netrender-probe/build_wordmark.rs`; sparse checkouts
+need `resources/fonts`) and indeterminate loading bar, from the first present until the
+first game frame. The page-marker bootstrap document's frames stay behind it. Released by
+the first game frame after the accepted load-end, or by the "settled" frame for static
+pages: `gate: startup screen released`, just before `gate: first game frame ...`. On the
+hosted runner the frames are CEF's software output (section "Software paint"), so the
+release is exercised there too.
+
+## Application icon
+
+The window icon follows the players' project-icon contract (`window_icon.rs`,
+`icon_rules.rs`): a valid `icon.png` next to the executable, set on the SDL3 X11 window
+(`_NET_WM_ICON`), else the embedded Roves logo; one line `gate: window icon source=...`. The
+package ships no `.desktop` entry or hicolor icon for desktop integration (launchers, dock
+before start): that is packaging work for the distribution format still to choose (tar,
+AppImage, Flatpak, Steam), tracked in `TODO.md`.
+
+## Steam
+
+`steam` cargo feature, off by default; the same code as the macOS gate (its README, section
+"Steam"): the Windows player's `src/steam.rs`, the lifetime in the macOS gate's
+`src/player_steam.rs` and the redistributable lookup `src/steam_lib.rs`, all through
+`#[path]`. Packaged-game mode only, initialized in the browser process before CEF starts;
+App ID from `SteamAppId`, else `steam_appid.txt` next to the executable; Steam missing is
+never fatal (`gate: steam unavailable reason=...`, the host API answers "unavailable");
+`gate: steam shutdown complete` before CEF shuts down. `target/release/bundle` built with the
+feature copies steamworks-sys's `libsteam_api.so` next to the executable, where the gate's
+`$ORIGIN` run path resolves it (no `LD_LIBRARY_PATH`, which the setuid `chrome-sandbox`
+would drop). CEF re-executes the same binary for its subprocesses, so the dynamic loader
+maps the library into them as well (before the sandbox engages); they never call it.
+`chrome-sandbox` does not depend on it. Inside Steam the game runs in the Steam Linux
+Runtime container: section "Steam Linux Runtime".
 
 ## Saves and the player profile
 
@@ -345,6 +383,33 @@ starts a WebAudio oscillator, the page must report `roves-ci-audio state=running
 sampled twice a second while the player runs, must show Chromium's output stream. That is
 evidence that audio reaches the sound server, not that it is audible.
 
+**Icon, startup screen and Steam** (sections "Application icon", "Startup screen", "Steam"):
+the fixture gate must log no startup-screen line; the isolated packaged run additionally
+requires `startup logo decoded`, `wordmark rendered ... font=MetalMania`, a `window icon
+source=(project|roves) ... set=true` line, no `gate: steam` line and, on exit 0, `startup
+screen released` between `fresh frame requested` and the first game frame; the player
+fixture requires the release after its load-end on exit 0. The standard package must contain
+no `libsteam_api.so` and its executable must not need it. Steam variant: `cargo build
+--release --bins --features steam` in the same target directory (`gate-steam-build.log`),
+bundled into its own directory with the template, `chrome-sandbox` made root 4755; required:
+`libsteam_api.so` next to the gate and byte-identical to steamworks-sys's redistributable, a
+`NEEDED [libsteam_api.so]` entry, the `$ORIGIN` run path, `ldd` resolving `libsteam_api.so`
+and `libcef.so` from the package directory with nothing missing, and `chrome-sandbox` not
+depending on it. Then one launch under **emulation**, the Windows player's design: the
+pinned Goldberg/GSE Linux release (gbe_fork `release-2026_09_27`,
+`emu-linux-release.tar.bz2`, SHA-256 checked, the digest of `steamworks-gate.yml`) replaces
+`libsteam_api.so` offline (`steam_interfaces.txt` generated from the redistributable,
+`steam_settings` with App ID 480, one achievement and one stat), the game is
+`support/cef-netrender-probe/host-api-fixture` with a fresh persistent profile; the package is
+restored afterwards. Required: exit 0; in order `steam initialized app_id=480`, origin,
+persistent profile, sandboxed CEF, accepted load-end, `startup screen released`, `close
+requested by the game command=exit`, browser closed, `steam shutdown complete`, `cef shutdown
+complete`, loopback stopped, exit line; the page's `roves-host-api steam available=true
+app_id=480 unlock=true unlocked=true set=true stat=3 store=true` and `phase=1 write=true
+read=hello-roves`; no `FAIL`, `steam unavailable`, host API error or CSP violation
+(`steam-emulation/steam-emulation.log`). This is emulator evidence, not the real Steam client.
+Artifact `cef-linux-gate-x64-steam`: the Steam package's tar (redistributable and template).
+
 ## Running elsewhere
 
 Extracting the artifact as a normal user drops the root owner and the setuid bit:
@@ -403,7 +468,8 @@ are black whatever is shown (wgpu-weld's note), so use the gate's pixel readback
 
 ## Steam Linux Runtime
 
-Not covered. The CEF player has no Steam integration on any platform yet. Under Steam,
+Not covered. The `steam` feature (section "Steam") is checked on the plain host only, under
+the GSE emulator in CI. Under Steam,
 games run inside the Steam Linux Runtime container (pressure-vessel, bubblewrap-based):
 bubblewrap sets `NO_NEW_PRIVS`, so a set-user-ID `chrome-sandbox` cannot work there, and
 Chromium's layer 1 then depends on unprivileged user namespaces being available *inside*
@@ -412,5 +478,6 @@ the container (nested namespaces). Whether CEF 154's sandbox starts in the curre
 Vulkan ICDs are exposed so the DMA-BUF path works, is unverified. The gate reports
 `container-env=` (`PRESSURE_VESSEL_RUNTIME`, `STEAM_RUNTIME`, `SteamAppId`, `FLATPAK_ID`,
 `container`) so a run inside such a container is identifiable, and never treats it as the
-plain-host result. Shipping `libsteam_api.so` and the overlay (it must hook the presenting
-process, the main process here) remain as described in the macOS gate's README.
+plain-host result. The overlay (it must hook the presenting process, the main process here)
+remains a manual check with the real Steam client (macOS gate's README, "Steam variant: open
+points").

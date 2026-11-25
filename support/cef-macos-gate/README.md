@@ -149,15 +149,16 @@ Opening such an `.app` plays the game: no switch, no debug server.
   long after the first game frame, so the ordinary close path runs unattended;
   `ROVES_GATE_FRAME_DUMP=<file.bmp>` writes the last frame before close (32-bit top-down
   BMP of the `Bgra8Unorm` readback).
-- **Not in this slice**: native error dialogs, the startup screen, a `.icns` bundle icon,
-  signing/notarisation, Steam. Page marker, input, window and audio: next section.
+- **Not in this slice**: native error dialogs, signing/notarisation. Page marker, input,
+  window and audio: next section; startup screen, bundle icon and Steam: sections "Startup
+  screen", "Application icon" and "Steam".
 
 ## Host API marker, input, window and audio
 
 Shared with the Windows player through `#[path]`, so the packaged game behaves the same on
 all three platforms (glue: `src/session.rs`, compiled by the Linux gate too); the project icon is
-`Contents/Resources/icon.png` (`SDL_SetWindowIcon` sets the Dock icon at run time; the
-bundle has no `.icns` yet, so Finder shows the generic app icon):
+`Contents/Resources/icon.png` (`SDL_SetWindowIcon` sets the Dock icon at run time; Finder
+shows the bundle's `.icns`, section "Application icon"):
 
 - **Host API marker**: `window.__ROVES__` (read by `isAvailable()` of
   `@drincs/roves-api/core`) is registered before the game document exactly as on Windows:
@@ -189,9 +190,8 @@ bundle has no `.icns` yet, so Finder shows the generic app icon):
   changed (HiDPI). The title follows the game document's `<title>`. The window icon follows
   the Windows project-icon contract (`window_icon.rs`, `icon_rules.rs`): a valid `icon.png`
   in the icon directory, else the embedded Roves logo (`gate: window icon source=...`).
-- **Not ported**: the Windows startup screen (logo, wordmark, loading bar) is composed by the
-  Windows player's own compositor (`app.rs`), not a self-contained module; the gates show
-  black until the first game frame.
+- **Startup screen**: the Windows player's branding until the first game frame, section
+  "Startup screen".
 - **Audio**: Chromium plays page audio itself (CoreAudio on macOS, PulseAudio with an ALSA
   fallback on Linux, from its audio service). Neither gate passes a switch that mutes or
   disables it (no `--mute-audio`, no autoplay override): autoplay follows Chromium's default
@@ -205,6 +205,74 @@ bundle has no `.icns` yet, so Finder shows the generic app icon):
   by side. `gate: PASS test input click, key and wheel delivered`, or a `FAIL` (exit 1); the
   test auto-close waits for it. Fixture: `support/cef-macos-gate/player-fixture` (README
   "CI").
+
+## Startup screen
+
+Packaged-game mode only (the fixture gate keeps black): from the first present until the
+first game frame the window shows the Windows player's startup screen, same content and
+rules: dark background, the Roves logo and the MetalMania "Roves" wordmark of
+`support/cef-netrender-probe/src/splash.rs` (`#[path]`) and the indeterminate loading bar,
+placed by `game_rules::splash_layout`/`splash_indicator`. The wordmark is rasterized at build
+time by the shared `support/cef-netrender-probe/build_wordmark.rs` (this gate's `build.rs`,
+`ab_glyph`, font `resources/fonts/MetalMania-Regular.ttf`, SIL OFL 1.1), so sparse checkouts
+need `resources/fonts`. `src/startup_screen.rs` composes the static column on the CPU once per
+window size into one texture shown 1:1 by the frame path's `TextureBlitter`; only the bar's
+rows are rewritten each frame. Frames before the game's first one (the `about:blank` page-marker
+bootstrap) stay behind it. It is released by the first game frame after the accepted
+load-end, or by the "settled" frame 1 s after load-end for static pages (`gate: startup
+screen released`, just before `gate: first game frame ...`). Log lines: `gate: startup logo
+decoded size=...`, `gate: wordmark rendered size=... font=MetalMania` (a failure only omits
+that piece: `... unavailable error=...`). No failure screen: the gate ends the run instead.
+The Linux gate compiles the same module.
+
+## Application icon
+
+Two icons, as on Windows (exe resource plus window icon):
+
+- **Bundle icon** (Finder, Launchpad, the Dock before launch): `packaging/icns.sh
+  <square.png> <out.icns>` converts a square PNG (the game's project icon, or the repository
+  `icon.png` as the fallback) with the system's `sips` and `iconutil`; sizes above the source
+  edge are left out, not upscaled. `target/release/bundle <out> --resources <dir>`: cef's
+  bundler copies `<dir>/mac` into `Contents/Resources` and sets `CFBundleIconFile` when
+  `<dir>/mac/roves-cef-macos-gate.icns` exists. Packaging replaces that file in place for a
+  game's own icon.
+- **Window/Dock icon at run time**: `Contents/Resources/icon.png` when valid, else the
+  embedded Roves logo (`gate: window icon source=...`, section "Host API marker, input, window
+  and audio").
+
+CI builds the `.icns` from the repository `icon.png` and checks the file and the Info.plist
+key (`PlistBuddy`).
+
+## Steam
+
+`steam` cargo feature, off by default (the standard `.app` has no Steam code and no
+`libsteam_api.dylib`). Same client as the Windows player: its `src/steam.rs` through
+`#[path]` (steamworks-rs `=0.13.1`, steamworks-sys 0.13.0 with the bundled SDK
+redistributables) behind the host API's `steam` module; lifetime in `src/player_steam.rs`
+(shared with the Linux gate):
+
+- Packaged-game mode only, initialized once in the browser process before CEF starts, never
+  in a helper. App ID from `SteamAppId` (Steam's launch environment), else
+  `Contents/MacOS/steam_appid.txt`, else whatever `SteamAPI_Init` finds.
+- Steam missing or not running is never fatal: one line `gate: steam unavailable reason=...`
+  (no persona name or Steam ID) and the host API answers "unavailable"; the game plays as in
+  the standard package. Success: `gate: steam initialized app_id=<id>`.
+- Callbacks dispatched once per drive-loop turn; the client is dropped (`SteamAPI_Shutdown`,
+  `gate: steam shutdown complete`) after the browser closed and before CEF shuts down.
+- `target/release/bundle` built with the feature copies steamworks-sys's
+  `libsteam_api.dylib` (found in `<target>/release/build/steamworks-sys-*/out`, byte-checked
+  when several exist, `src/steam_lib.rs`) into `Contents/MacOS`, where its install name
+  `@loader_path/libsteam_api.dylib` resolves from the main executable. The five CEF helpers
+  are separate executables and do not link it.
+
+CI builds the variant after the standard steps (`cargo build --release --bins --features
+steam`, same target directory), bundles it with the same icon and template, and requires the
+dylib, the main executable's `@loader_path/libsteam_api.dylib` reference and no helper
+referencing it. The runner has no Steam client and macOS has no emulator step, so the run
+requires `steam unavailable reason=`, an accepted load-end and the standard isolated run's
+exit code. The real Steam client and the overlay (it must hook the presenting process, the
+main one here) remain manual checks; signing/notarising the dylib with the `.app` is not
+addressed.
 
 ## Saves and the player profile
 
@@ -353,6 +421,24 @@ wheel notch (CEF delta `(0, 120)`, one trusted DOM wheel scrolling up); `PASS te
 clean close; exit 0, or 2 when the fixture gate had no accelerated frame. The click starts a
 WebAudio oscillator whose `AudioContext` state is a notice only.
 
+**Icon, startup screen and Steam** (sections "Application icon", "Startup screen", "Steam"):
+the bundle step builds `roves-cef-macos-gate.icns` from the repository `icon.png`
+(`packaging/icns.sh`), bundles with `--resources`, and requires
+`Contents/Resources/roves-cef-macos-gate.icns`, `CFBundleIconFile` set to it, and no
+`libsteam_api` in the standard `.app`. The fixture gate must log no startup-screen line. The
+isolated packaged run additionally requires `startup logo decoded`, `wordmark rendered ...
+font=MetalMania`, no `gate: steam` line and, on exit 0, `startup screen released` between
+`fresh frame requested` and the first game frame; the player fixture requires the release
+after its load-end on exit 0. Then the Steam variant: `cargo build --release --bins
+--features steam` in the same target directory (log `gate-steam-build.log`), its own `.app`
+with the same icon and template, `Contents/MacOS/libsteam_api.dylib`, `otool -L` of the main
+executable showing `@loader_path/libsteam_api.dylib` and of every helper showing no
+`libsteam_api`. One isolated run (auto-close 3000 ms) must exit like the standard isolated run
+with, in order, `steam unavailable reason=...`, the packaged-game origin, isolated profile,
+sandboxed CEF, accepted load-end, browser closed, CEF shutdown, loopback stopped, exit line,
+and no `FAIL`, `steam initialized`/`steam shutdown complete` or DevTools line
+(`player-steam-run.log`). Artifact `cef-macos-gate-arm64-steam`: the zipped Steam `.app`.
+
 ## Open risks and blockers (not verified)
 
 - **Accelerated frames on real Macs**: welding's README records IOSurface -> Metal receipts
@@ -414,14 +500,10 @@ accelerated frame. Reference: wgpu-weld's `demo-weld-linux`. Next bounded task: 
 `cfg(target_os = "linux")` twin of this gate (same verdicts; sandbox evidence from
 `/proc/<pid>/status` and the helper command lines) in its own job.
 
-## How Steam follows
+## Steam variant: open points
 
-The CEF player has no Steam integration yet on any platform (the engine's `--features steam`
-build was removed with Servo on this branch). Steam is a variant of the same bundle: link
-Steamworks in the main (browser) process and ship the redistributable next to it,
-`libsteam_api.dylib` inside the `.app` (signed with it) on macOS and `libsteam_api.so` on
-Linux. Points to verify, not assumed: the Steam overlay must hook the process that presents,
-which here is the main process (wgpu Metal/Vulkan on the SDL3 window), not a CEF helper;
-on Linux the Steam Linux Runtime container (pressure-vessel) may restrict the namespaces
-Chromium's sandbox needs. Each platform keeps a standard and a Steam variant from the same
-build inputs, as the Windows release matrix does.
+Implemented (section "Steam"). Still to verify, not assumed: the Steam overlay must hook the
+process that presents, which here is the main process (wgpu Metal/Vulkan on the SDL3
+window), not a CEF helper; on Linux the Steam Linux Runtime container (pressure-vessel) may
+restrict the namespaces Chromium's sandbox needs. Each platform keeps a standard and a Steam
+variant from the same build inputs, as the Windows release matrix does.

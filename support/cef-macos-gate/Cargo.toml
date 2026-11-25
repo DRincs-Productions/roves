@@ -45,6 +45,10 @@ bundled-sdl = ["sdl3/build-from-source-static"]
 # cef-dll-sys skips the CEF download and the libcef_dll_wrapper build; without
 # `bundled-sdl` no C toolchain for the target is needed. Never used for a runnable bundle.
 dox = ["cef/dox"]
+# Steamworks in the player (Windows player README "Steam"), off by default: the Windows
+# player's src/steam.rs (`#[path]`) behind the host API's `steam` module; the package then
+# needs libsteam_api.dylib in the `.app`'s `Contents/MacOS` (bundle.rs copies steamworks-sys's redistributable there).
+steam = ["dep:steamworks"]
 
 [dependencies]
 welding = { path = "../vendor/wgpu-weld/welding", default-features = false, features = ["wgpu-29", "cef-runtime", "cpu-paint-fallback"] }
@@ -73,6 +77,15 @@ tempfile = { version = "3", default-features = false }
 # into the crate) maps SDL's scancode (USB HID usage) to the macOS virtual key code / XKB key
 # code CEF expects in `native_key_code`. MIT; already in the engine's graph (1.0.0).
 keycode = "1.0.0"
+# `steam` feature only: steamworks-rs (MIT/Apache-2.0), the Windows player's pin
+# (steamworks-sys 0.13.0 bundles the Steamworks SDK redistributables, Valve's SDK terms).
+steamworks = { version = "=0.13.1", optional = true }
+
+[build-dependencies]
+# build.rs only (support/cef-netrender-probe/build_wordmark.rs, `#[path]`): rasterizes the
+# startup wordmark with the official MetalMania font (resources/fonts, SIL OFL 1.1) into an
+# embedded alpha bitmap, as in the Windows player. Nothing of it is linked into the player.
+ab_glyph = "0.2.32"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # bundle.rs only: cef's `BundleInfo::version` is a semver::Version (cef enables semver for

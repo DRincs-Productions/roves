@@ -113,6 +113,7 @@ pub(crate) fn drive(
     profile_dir: &Path,
     timeout: Duration,
     game_exit: &std::sync::OnceLock<&'static str>,
+    steam: Option<&crate::host_api::SteamHandle>,
 ) -> Result<(i32, LinuxCefProducer), String> {
     let auto_close = env_u64("ROVES_GATE_AUTO_CLOSE_MS").map(Duration::from_millis);
     let dump = std::env::var_os("ROVES_GATE_FRAME_DUMP").map(PathBuf::from);
@@ -205,6 +206,7 @@ pub(crate) fn drive(
             close_source = Some("game-exit");
         }
         runtime.do_message_loop_work();
+        crate::player_steam::run_callbacks(steam);
         session.devtools_step(&mut producer);
         while let Some(event) = producer.poll_web_event() {
             let CefSurfaceEvent::Navigation(event) = event else {
@@ -326,6 +328,7 @@ pub(crate) fn drive(
                     && first_game_frame.is_none()
                 {
                     first_game_frame = Some(Instant::now());
+                    gpu.hide_startup_screen();
                     let colours =
                         frame_pixels_bgra(&gpu.host, &new).map(|px| distinct_colours(&px));
                     println!(
@@ -361,6 +364,7 @@ pub(crate) fn drive(
             && let Some(current) = frame.as_ref()
         {
             first_game_frame = Some(Instant::now());
+            gpu.hide_startup_screen();
             println!(
                 "gate: first game frame settled (no paint after load-end) generation={}",
                 current.generation
@@ -368,7 +372,9 @@ pub(crate) fn drive(
             schedule_close(auto_close, anchor, &mut close_at);
         }
         session.per_turn(&mut producer, mouse, sdl_events, window);
-        if gpu.present(frame.as_ref()) {
+        // Frames before the game's first one (the page-marker bootstrap document) stay
+        // behind the startup screen.
+        if gpu.present(first_game_frame.and(frame.as_ref())) {
             presented += 1;
         }
         failed |= gpu.failed.load(Ordering::Relaxed) || session.failed;
