@@ -239,7 +239,7 @@ prima di passare al controllo della CI e alla decisione di pubblicare.
 
 ### Gate CI Apple aggiornato (5 novembre 2026)
 
-I controlli Apple girano sui tag versionati v*.*.*. release.yml esegue V8 macOS normal e JITless e la probe SDL3 prima della pubblicazione dei bundle desktop. ios.yml esegue sul tag la build del simulatore e lo smoke della firma, e aggiorna il template iOS della release test. La verifica su dispositivo resta il build firmato mach bundle --ios --ios-release. Linux, Windows, Android e i controlli condivisi restano i gate per commit.
+Dal player CEF (v0.9.0) release.yml chiama sul tag i tre workflow dei player, incluso il gate macOS arm64 (Metal, pacchetto standard e Steam), prima di pubblicare. Android e iOS restano sul motore Servo al tag v0.7.15 e non fanno parte di questo rilascio.
 
 ### Procedura di implementazione: loop autonomo
 
@@ -575,29 +575,27 @@ ask rather than silently leaving `main` ahead of the last cut tag indefinitely.*
 
 ## Cutting a versioned release (`v<major>.<minor>.<patch>` tags)
 
-`.github/workflows/release.yml` builds and publishes a real, versioned GitHub Release —
-distinct from `.github/workflows/test.yml`'s rolling "test" release (see that file's own
-comment for why it exists separately). It triggers on pushing a tag matching `v*.*.*` (e.g.
-`v0.1.0`), builds directly from that tagged checkout of this repo, and publishes a portable bundle per platform
-(Windows/macOS/Linux, no `.msi`/`.dmg`/`.deb` installers) to that Release, named
-`roves_shell_<platform>.zip`. The first cut, `v0.1.0`, is the engine shell only: no bundled
-UI/game content (`roves-packmaster` content lands in a future release).
+`.github/workflows/release.yml` publishes the CEF player release. On a `v*.*.*` tag it calls
+the three player workflows (`cef-netrender-probe.yml` Windows with `release: true`,
+`cef-macos-gate.yml`, `cef-linux-gate.yml`), which build and verify the standard, Steam and
+(Windows only) MCP packages end to end; its `publish` job zips them, checks every zip and
+creates the GitHub Release with eight assets: `roves_shell_{windows,macos,linux}.zip`, the
+same three with `_steam`, `roves_shell_windows_mcp.zip` and `SHA256SUMS.txt`. Each zip is a
+runnable player with the sample game in `game/`; Packmaster and roves-action use it as the
+base and replace `game/` with the user's build. A push to a `release-check/<name>` branch
+runs the same pipeline as a dry run (zips uploaded as the `roves-release-dry-run` artifact,
+nothing published).
 
 ### To cut a release
 
-1. Decide the version (semver), e.g. `0.1.0`.
-2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0` — this alone triggers
-   `release.yml`; nothing else needs to happen by hand.
-3. Watch the run: `https://github.com/DRincs-Productions/roves/actions/workflows/release.yml`.
-4. Once green, verify what actually got published at
-   `https://github.com/DRincs-Productions/roves/releases/tag/v0.1.0` — check all six zips are
-   attached (Windows/macOS/Linux, plain and `_steam` variants) and
-   the notes rendered as expected. Don't consider the release done on "the workflow went
-   green" alone — confirm the artifacts are actually there.
-5. Update the pinned shell version in `roves-action` and `roves-packmaster` (see the dedicated
-   section below) — **the same turn**, not a follow-up. A release isn't finished just
-   because the tag built; the sibling projects that consume this version are the whole
-   reason it needed cutting in the first place.
+1. Cut from `main` only, after every project of the ecosystem is merged on its own `main`.
+2. Optional dry run: `git push origin HEAD:release-check/vX.Y.Z`, then delete that branch.
+3. `git tag vX.Y.Z && git push origin vX.Y.Z`; watch
+   `https://github.com/DRincs-Productions/roves/actions/workflows/release.yml`.
+4. Once green, confirm at `https://github.com/DRincs-Productions/roves/releases/tag/vX.Y.Z`
+   that all eight assets are attached (the workflow's last step also checks it). Download
+   them and try them; "the workflow went green" alone is not done.
+5. In the same effort, bump the pins in `roves-action` and `roves-packmaster` (below).
 
 ### CRITICAL: after every release, sync the shell version in `roves-action` and `roves-packmaster`
 
@@ -605,96 +603,27 @@ The consumer checkouts can be sibling directories or submodules inside this repo
 (`roves-action/`, `roves-packmaster/`, `roves-wiki/`). Locate the actual checkout before
 reporting it missing. Their engine references do not update just because a tag is pushed:
 
-- **`roves-action/action.yml`**: bump both fixed literals, the source-checkout `ref:` and
-  the prebuilt-shell release URL, plus the README version. There is no `roves-ref` input
-  anymore. This changes what consumers receive and needs a verified commit.
-- **`roves-packmaster/src/lib/shell-version.txt`**: update the single shared pin. The frontend
-  imports it through Vite's raw loader for `TARGET_SHELL_VERSION`, and Rust embeds it with
-  `include_str!` for the actual download. Both trim whitespace. Update the README and check
-  both paths; do not reintroduce separate literals. A frontend-only bump previously left
-  production Rust downloads at v0.4.18 while the UI displayed v0.7.12.
+- **`roves-action`**: the desktop release URL version in `action.yml` and the README.
+- **`roves-packmaster/src/lib/shell-version.txt`**: the single shared pin (frontend through
+  Vite's raw loader, Rust through `include_str!`). Update the README and check both paths.
 
-`roves-api` (`../roves-api/src/version.ts`'s `COMPATIBLE_SHELL_VERSION`) is **not** part of
-this same per-release obligation — it's a static compatibility note for consumers, not
-something that drives build behavior or a live check, so bump it only when a shell change
-actually affects `roves-api`'s own compatibility (a `roves:`/`steam:` protocol change), not
-mechanically on every tag.
-
-If `../roves-action` or `../roves-packmaster` isn't present as a sibling checkout when cutting a
-release, say so explicitly rather than silently skipping this step — the same rule as every
-other cross-repo sync obligation in this file.
+A change of the package layout (file names, `game/` location, icon files) is a code change
+in both consumers, not a pin bump. `roves-api`'s `COMPATIBLE_SHELL_VERSION` is bumped only
+when the host API or the page markers change. If a consumer checkout is missing, say so.
 
 ### If a run fails: delete-and-republish loop
 
-GitHub won't let a tag be re-pushed over itself, and `gh release create` (used by the
-workflow's own `create-release` job) errors on an existing release of that name — retrying
-means tearing both down and starting clean, not just re-running the failed job:
-
-1. Delete the GitHub Release for that tag, if one was already created — via the web UI
-   ("Delete this release") or `gh release delete vX.Y.Z --yes`. (`create-release` also
-   self-heals this automatically on the *next* push of the same tag — see its own `gh
-   release delete ... || true` step — so this is belt-and-braces, not strictly required
-   before re-pushing.)
-2. Delete the tag both locally and on the remote: `git tag -d vX.Y.Z && git push origin
-   --delete vX.Y.Z`.
-3. Fix whatever caused the failure.
-4. Re-tag and re-push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-5. Repeat until both macOS runtime modes and every one of the six platform/feature bundle
-   jobs are green and the release page shows all six zips.
+1. `gh release delete vX.Y.Z --yes` if a release was created (the `publish` job also runs
+   `gh release delete ... || true` before creating it).
+2. `git tag -d vX.Y.Z && git push origin --delete vX.Y.Z`.
+3. Fix the cause on `main` (through the normal CI rules), re-tag the new commit and push.
+4. macOS arm64 runners are sometimes cancelled for capacity: a cancelled run is not green;
+   re-push the tag rather than publishing without it.
 
 ### Diagnosing a failure without `gh`/a token on hand
 
-Raw step logs need repo-admin auth to download (the Actions API's job-logs endpoint 403s
-"Must have admin rights to Repository" for an anonymous/public request) — but `::notice::`/
-`::error::` **annotations** are readable anonymously via `GET /repos/DRincs-Productions/
-roves/check-runs/{job_id}/annotations`. That's why the smoke-test step re-emits stdout/
-stderr/`roves.log` as `::notice::` lines on a launch failure (mirroring `test.yml`'s own
-reasoning, see its comments). A failure inside `mach build`/`mach bootstrap` itself (a
-compile error, a GStreamer install failure) has no custom annotation, only the generic
-"Process completed with exit code N" one — diagnosing those needs either `gh run view --log`
-(if `gh`/a token is available) or someone with repo access checking the run's logs directly
-at its `html_url`.
-
-### Design notes worth knowing before touching this workflow
-
-- **No `--content-dir`**: this first release is the engine shell only — revisit this once a
-  future release adds real `roves-packmaster` content.
-- **Portable only, no `--deb`/`--msi`/`--dmg`**: `--package-name`/`--package-version` only
-  affect those installer formats (see `post_build_commands.py`), so they're dropped from
-  `mach bundle` here too — not worth the extra CI surface for a shell-only build. See
-  README.md's "Portable vs. installable packages" section if a future release adds them
-  back.
-- **Real GStreamer, not `--media-stack dummy`**: unlike `test.yml`, this release ships
-  working audio/video. Linux and macOS get it for free (`mach bootstrap` already installs
-  GStreamer non-interactively there — apt packages on Linux, `sudo installer -pkg` on macOS
-  with `--yes`). **Windows needs a workaround**: `mach bootstrap`'s own GStreamer installer
-  wraps `msiexec` in `Start-Process -verb runAs` (a UAC elevation prompt) that hangs forever
-  on a non-interactive GH runner — see `test.yml`'s own comment on this exact, already-
-  documented finding (that workflow sidesteps it by using `--media-stack dummy` instead of
-  solving it). `release.yml` installs the same two MSIs itself, directly via `msiexec /a ...
-  TARGETDIR=... /qn` (no elevation prompt), to the exact path `python/servo/platform/
-  windows.py`'s `DEPENDENCIES_DIR` would use, then passes `--skip-platform` to `mach
-  bootstrap` so it doesn't redundantly (and hang-prone-ly) try to install it again.
-- **Every platform builds twice, plain and `--features steam`**: each of the 3 platforms
-  gets a second build compiled with `--features steam` and published as a second asset
-  (`roves_shell_<platform>_steam.zip`, alongside the existing plain `roves_shell_<platform>.zip`)
-  — see the matrix's `steam`/`asset_suffix`/`build_features` fields. `mach bundle` itself
-  needs no changes for this: Windows/Linux pick up the Steamworks redistributable
-  automatically (`build.rs`'s `copy_steam_lib` already places it flat next to the binary,
-  where the existing DLL/`.so`-copy step already looks), and macOS's `_bundle_macos` already
-  special-cases `libsteam_api.dylib` correctly (see `CUSTOMIZATIONS.md`'s 2026-08-14 entry).
-  This is what lets Roves Packmaster (`roves-packmaster`) offer a real Steam-enabled release without
-  ever compiling anything itself — see that project's own `CLAUDE.md`, "Why no Steam plugin
-  still" section (now stale as of whichever release first publishes the `_steam` assets;
-  revisit that section once Packmaster's own Steam wiring lands).
-- **`mach` needs `chmod +x` on Linux/macOS**: this repo's `mach` script is tracked in git as
-  mode `100644` (committed from Windows, where the exec bit is meaningless) — a fresh
-  Linux/macOS checkout needs it re-marked executable or `./mach bootstrap` fails immediately
-  with "Permission denied" (exit 126). `release.yml` does this explicitly; if this ever
-  regresses (e.g. a future commit re-adds `mach` without the bit), re-run `git update-index
-  --chmod=+x mach`.
-- **`mach` no longer needs `tests/wpt/tests/tools/`** (since 2026-10-14): the
-  upstream `tidy`/`wpt` packages, `package`/`devenv` command modules and every
-  `testing_commands.py` command except `test-unit`/`fmt` were deleted, so `bootstrap`,
-  `build`, `bundle` and `test-unit` run from a plain checkout. The old sparse-checkout
-  workaround is gone from every workflow and from `roves-action`.
+Raw step logs need repo-admin auth, but `::notice::`/`::error::` annotations are readable
+anonymously via `GET /repos/DRincs-Productions/roves/check-runs/{job_id}/annotations`; the
+player steps re-emit their key log lines as annotations. With the read-only PAT, the logs
+artifacts (`cef-*-logs`, `cef-netrender-probe-evidence`) can be downloaded through the
+artifacts API.

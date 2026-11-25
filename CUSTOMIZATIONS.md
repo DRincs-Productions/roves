@@ -1,3 +1,30 @@
+## 2026-11-25 - CEF player release workflow (`release.yml`, first tag v0.9.0)
+
+Added: `.github/workflows/release.yml`, `support/cef-netrender-probe/packaging/steam_package.ps1`.
+Changed: `.github/workflows/cef-{netrender-probe,macos-gate,linux-gate}.yml`, the probe README
+("Steam", new "Releases"), `README.md`, `TODO.md`.
+Why: publish the CEF player as versioned GitHub Release assets that are both runnable demos
+(visual-novel-template in `game/`) and the bases Roves Packmaster and roves-action repack.
+On a `v*.*.*` tag `release.yml` calls the three player workflows (new `workflow_call`
+trigger; their push triggers are now limited to branches, since path filters do not apply to
+tag pushes and the tag would otherwise run them twice) with every existing check. The Windows
+workflow takes `release: true`, which joins the MCP opt-in (`ROVES_CEF_MCP_CANDIDATE`: the
+packaged MCP smoke always runs and the MCP package is uploaded; inside a called workflow
+`github.event_name` is the caller's `push`, so an input is needed) and titles
+`PROVENANCE.txt` as a release. New Windows Steam playable package: `steam_package.ps1` derives
+it from the plain package (Steam `play.dll` + `steam_api64.dll`, gated that the Steam bundle
+adds nothing else and is byte-identical otherwise; imports, Rust dependency list, a
+"Steam variant" provenance section and `SHA256SUMS.txt` refreshed), CI launches it without
+Steam (`steam unavailable`, frame, release, exit 0) and uploads
+`visual-novel-template-roves-cef-steam-windows-x64`. Windows package uploads now set
+`include-hidden-files: true`: `SHA256SUMS.txt` lists dotfiles such as
+`mcp/node_modules/.package-lock.json`, which `upload-artifact@v4` drops by default (so the
+MCP artifact could not pass Packmaster's checksum check). The publish job zips the Windows
+packages (contents at the zip root), reuses the macOS `ditto` zips, repacks the Linux tar.gz
+with Info-ZIP `zip -y` (`chrome-sandbox` 0755: root/setuid cannot survive a zip), verifies
+each zip's layout and the Windows checksums, writes `SHA256SUMS.txt`, replaces any release of
+the same name, creates it with `--verify-tag` and fails unless all eight assets are listed.
+
 ## 2026-11-25 - CEF macOS/Linux players: Steam variant, startup screen, bundle icon
 
 Added: `support/cef-macos-gate/{build.rs,packaging/icns.sh}`,

@@ -11,7 +11,7 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 Linux feasibility gate
 # selects CEF's software output (OnPaint uploaded by the vendored welding, README "Software
 # paint") and must pass with `evidence=software` (exit 0, fixture colour read back); that is
 # never GPU-import evidence. Exit 2 (no frame) is an error on a CPU adapter. Separate from cef-netrender-probe.yml
-# (Windows) and cef-macos-gate.yml (macOS), both unchanged. Never gates a release.
+# (Windows) and cef-macos-gate.yml (macOS), both unchanged.
 # The same gate directory then packages the UNMODIFIED production web build of
 # DRincs-Productions/visual-novel-template (same pin and commands as the Windows and macOS
 # packages) under game/ and runs it from the shared loopback server with the setuid layer 1
@@ -24,10 +24,15 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 Linux feasibility gate
 # require the startup screen released by the first game frame (README "Startup screen"). A
 # second package built with the `steam` feature (README "Steam") ships libsteam_api.so next
 # to the gate ($ORIGIN) and runs the host API fixture once under the pinned GSE emulator
-# (App ID 480, offline; emulation, not the real Steam client).
+# (App ID 480, offline; emulation, not the real Steam client). Also called by release.yml
+# (workflow_call) on a v*.*.* tag: the same build and checks, and its two archived packages
+# become the Linux release assets.
 
 on:
   push:
+    # Branches only: a tag push runs this workflow through release.yml, not a second time here
+    # (path filters are not evaluated for tag pushes).
+    branches: ['**', '!release-check/**']
     paths:
       - 'support/cef-linux-gate/**'
       # Vendored welding (temporary fork, ROVES_PATCHES.md).
@@ -66,6 +71,8 @@ on:
       - 'support/cef-netrender-probe/host-api-fixture/**'
       - '.github/workflows/cef-linux-gate.yml'
   workflow_dispatch:
+  # release.yml (no inputs: a release runs exactly the checks of a push).
+  workflow_call:
 
 concurrency:
   group: cef-linux-gate-${{ github.ref }}

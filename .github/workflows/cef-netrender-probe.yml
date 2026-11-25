@@ -9,11 +9,16 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 probe
 # packages the same Release bundle with the unmodified web build of
 # DRincs-Productions/visual-novel-template (pinned commit) as a directly playable Windows
 # folder (play.exe + game\, provenance, dependency check), runs it by direct launch and
-# uploads it as a workflow artifact only (no GitHub Release). Separate from
-# cef-window-probe.yml (CEF 156 baseline, unchanged). Never gates a release.
+# uploads it as a workflow artifact. Separate from cef-window-probe.yml (CEF 156 baseline,
+# unchanged). Also called by release.yml (workflow_call, release=true) on a v*.*.* tag: the
+# same build and every check below, with the MCP-enabled package always produced and smoked,
+# and the plain, Steam and MCP packages uploaded for the release's publish job.
 
 on:
   push:
+    # Branches only: a tag push runs this workflow through release.yml, not a second time here
+    # (path filters are not evaluated for tag pushes).
+    branches: ['**', '!release-check/**']
     paths:
       - 'support/cef-netrender-probe/**'
       # Compiled into the probe's opt-in game mode through `#[path]`.
@@ -43,6 +48,14 @@ on:
         description: 'Also run the packaged MCP smoke and upload the MCP-enabled development package'
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      release:
+        # release.yml: also run the packaged MCP smoke and upload the MCP-enabled package
+        # (as enable-mcp=true), and title the packages' PROVENANCE.txt as a release.
+        description: 'Called by release.yml for a versioned release'
+        type: boolean
+        default: false
 
 concurrency:
   group: cef-netrender-probe-${{ github.ref }}
@@ -62,11 +75,13 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: 1.99.1
       # Single opt-in for the MCP-enabled development package (packaged MCP smoke + upload),
-      # used by both steps below. Two equivalent sources: the manual input enable-mcp=true
-      # (workflow_dispatch, default false), or a push to the dedicated CEF branch whose head
+      # used by both steps below. Three sources: the manual input enable-mcp=true
+      # (workflow_dispatch, default false), a release.yml call (workflow_call input
+      # release=true; inside a called workflow github.event_name is the caller's `push`, so the
+      # input is the only reliable signal), or a push to the dedicated CEF branch whose head
       # commit message contains the marker [cef-mcp-candidate]. The marker is ignored on any
       # other branch, on tags and on dispatch. The plain user package is never affected.
-      ROVES_CEF_MCP_CANDIDATE: ${{ (github.event_name == 'workflow_dispatch' && inputs.enable-mcp == true) || (github.event_name == 'push' && github.ref == 'refs/heads/codex/cef-sdl3-wgpu-probe' && contains(github.event.head_commit.message, '[cef-mcp-candidate]')) }}
+      ROVES_CEF_MCP_CANDIDATE: ${{ inputs.release == true || (github.event_name == 'workflow_dispatch' && inputs.enable-mcp == true) || (github.event_name == 'push' && github.ref == 'refs/heads/codex/cef-sdl3-wgpu-probe' && contains(github.event.head_commit.message, '[cef-mcp-candidate]')) }}
     steps:
       - uses: actions/checkout@v4
       # welding 0.15.0 requires Rust 1.97.1; wgpu-weld e991684 pins 1.99.1 for its own CI.
@@ -1040,7 +1055,7 @@ jobs:
       # The same Release bundle plus the UNMODIFIED production web build of
       # DRincs-Productions/visual-novel-template at a pinned commit, laid out so that a
       # double click on play.exe opens the game (game\ is resolved next to the executable).
-      # Artifact only: nothing is attached to a GitHub Release.
+      # Uploaded as an artifact; release.yml publishes it (and its Steam and MCP variants) on a tag.
       - name: checkout visual-novel-template (pinned)
         id: template
         if: (success() || failure()) && steps.bundle.outcome == 'success'
@@ -1262,7 +1277,7 @@ jobs:
           @"
           visual-novel-template on the Roves CEF + SDL3 + wgpu desktop candidate (Windows x64)
           ==================================================================================
-          Experimental probe package, not a Roves release. Run play.exe (no arguments): the
+          $(if ('${{ inputs.release }}' -eq 'true') { 'Roves CEF player release ${{ github.ref_name }}.' } else { 'Experimental probe package, not a Roves release.' }) Run play.exe (no arguments): the
           game in the game folder next to it opens in one window. Saves persist between
           launches in a per-install profile under %LOCALAPPDATA%\Roves\Player\ (moving or
           renaming this folder starts a new, empty profile). Only the test switch
@@ -1851,11 +1866,70 @@ jobs:
           if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
           if (-not $failed) { Write-Output "::notice::Steam host API verified under EMULATION (GSE $env:GSE_TAG, App ID 480), not against the real Steam client" }
           if ($failed) { exit 1 }
+      # The directly playable Steam package (README "Steam", "Releases"): the plain package with
+      # the Steam play.dll and steam_api64.dll, provenance and checksums refreshed
+      # (packaging/steam_package.ps1, which also gates that the two bundles differ only there).
+      - name: assemble the Steam playable package
+        id: steam_package
+        if: (success() || failure()) && steps.steam_bundle.outcome == 'success'
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'roves-cef-vn-steam-package'
+          & ./support/cef-netrender-probe/packaging/steam_package.ps1 -Plain '${{ steps.package.outputs.dir }}' `
+            -PlainBundle (Join-Path $env:RUNNER_TEMP 'cef-nr-bundle') -SteamBundle (Join-Path $env:RUNNER_TEMP 'cef-nr-bundle-steam') `
+            -ProbeDir 'support/cef-netrender-probe' -Out $out
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "dir=$(Join-Path $out 'visual-novel-template-roves-cef-steam')" >> $env:GITHUB_OUTPUT
+      # The Steam package launched directly with no Steam client on the runner (as on macOS):
+      # Steam missing is never fatal, the log reports `steam unavailable` and the game plays and
+      # ends like the plain package's isolated run (software frame on WARP, release, exit 0).
+      - name: run the Steam package without Steam (never fatal, WARP)
+        if: (success() || failure()) && steps.steam_package.outcome == 'success'
+        shell: pwsh
+        run: |
+          $pkg = '${{ steps.steam_package.outputs.dir }}'
+          $out = Join-Path $env:RUNNER_TEMP 'cef-steam-package-run'
+          if (Test-Path -LiteralPath $out) { Write-Output "::error::$out already exists"; exit 1 }
+          $cwd = Join-Path $out 'unrelated-working-directory'
+          New-Item -ItemType Directory -Force $cwd | Out-Null
+          if (Get-Process play -ErrorAction SilentlyContinue) {
+            Get-Process play -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+          }
+          $log = Join-Path $out 'steam-package.log'
+          $arguments = @('--roves-isolated-profile', '--roves-no-error-dialog', '--roves-auto-close-ms=5000',
+            '--roves-timeout-ms=60000', "--roves-log=$log", "--log-file=$(Join-Path $out 'cef-debug.log')")
+          $p = Start-Process -FilePath (Join-Path $pkg 'play.exe') -ArgumentList $arguments -WorkingDirectory $cwd -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(150000)) { Get-Process play -ErrorAction SilentlyContinue | Stop-Process -Force; $code = -1 } else { $code = $p.ExitCode }
+          Start-Sleep -Seconds 2
+          $lines = if (Test-Path -LiteralPath $log) { @(Get-Content -LiteralPath $log) } else { @() }
+          $lines | ForEach-Object { Write-Host "  [steam-package] $_" }
+          $failed = $false
+          if ($code -ne 0) { Write-Output "::error::Steam package run: exit $code (expected 0)"; $failed = $true }
+          $last = -1
+          foreach ($pattern in @("player launch game-dir=$([regex]::Escape((Join-Path $pkg 'game'))) profile=isolated ",
+              'load-end status=200 url=http://127\.0\.0\.1:\d+/ ok=true',
+              '^roves-cef-nr startup released generation=\d+ ', 'browser closed', 'cef shutdown complete', 'game loopback stopped', 'exit code=0$')) {
+            $at = -1
+            for ($j = $last + 1; $j -lt $lines.Count; $j++) { if ($lines[$j] -match $pattern) { $at = $j; break } }
+            if ($at -lt 0) { Write-Output "::error::Steam package run: missing or out of order: $pattern"; $failed = $true } else { $last = $at }
+          }
+          foreach ($pattern in @('steam unavailable reason=.+$', 'import frame=\d+ .* path=cpu-paint-upload evidence=software$')) {
+            if (-not ($lines | Select-String -Pattern $pattern -Quiet)) { Write-Output "::error::Steam package run: missing $pattern"; $failed = $true }
+          }
+          foreach ($bad in @(' FAIL ', 'steam initialized', 'steam shutdown complete', '^roves-cef-nr mcp ')) {
+            $hit = $lines | Select-String -Pattern $bad | Select-Object -First 1
+            if ($hit) { Write-Output "::error::Steam package run: unexpected $($hit.Line)"; $failed = $true }
+          }
+          $lines | Select-String -Pattern 'steam unavailable' | Select-Object -First 1 | ForEach-Object { Write-Output "::notice::$($_.Line)" }
+          if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
+          if ($failed) { exit 1 }
       # Local MCP bridge (README "Local MCP bridge"). Assembled on every run for the fixture
       # gate below, in its own temporary folder: the plain package uploaded to users is not
       # touched and keeps the bridge off. Smoked as a package and uploaded only when
       # ROVES_CEF_MCP_CANDIDATE is true (enable-mcp=true, or the [cef-mcp-candidate] commit
-      # marker on the dedicated branch); default false.
+      # marker on the dedicated branch, or a release.yml call); default false.
       # The MCP-enabled package is the plain package plus mcp\ (server.mjs, its locked npm
       # dependencies, README) and the marker mcp\enabled that turns the bridge on in play.exe.
       # The same play.exe/play.dll as the plain package: the bridge is a runtime switch.
@@ -2017,6 +2091,9 @@ jobs:
         with:
           name: visual-novel-template-roves-cef-mcp-windows-x64
           path: ${{ runner.temp }}/roves-cef-vn-mcp-package
+          # Hidden files (e.g. mcp/node_modules/.package-lock.json) are listed in the
+          # package's SHA256SUMS.txt, so they must be in the artifact too.
+          include-hidden-files: true
           retention-days: 7
           if-no-files-found: error
       - name: upload MCP evidence
@@ -2037,6 +2114,16 @@ jobs:
         with:
           name: visual-novel-template-roves-cef-windows-x64
           path: ${{ runner.temp }}/roves-cef-vn-package
+          include-hidden-files: true  # SHA256SUMS.txt lists every file, dotfiles included
+          retention-days: 14
+          if-no-files-found: error
+      - name: upload the Steam playable package
+        if: (success() || failure()) && steps.steam_package.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-novel-template-roves-cef-steam-windows-x64
+          path: ${{ runner.temp }}/roves-cef-vn-steam-package
+          include-hidden-files: true  # SHA256SUMS.txt lists every file, dotfiles included
           retention-days: 14
           if-no-files-found: error
       - name: upload evidence
@@ -2052,6 +2139,7 @@ jobs:
             ${{ runner.temp }}/cef-vn-player-run/refused-*.stderr.txt
             ${{ runner.temp }}/cef-host-api/*.log
             ${{ runner.temp }}/cef-steam-emulation/*.log
+            ${{ runner.temp }}/cef-steam-package-run/*.log
             ${{ runner.temp }}/cef-nr-steam-build.log
             ${{ runner.temp }}/vnt-npm-ci.log
             ${{ runner.temp }}/vnt-build.log

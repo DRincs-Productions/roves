@@ -1,0 +1,285 @@
+name: CEF player release
+
+# Versioned release of the Roves CEF + SDL3 + wgpu player (first: v0.9.0). Pushing a tag
+# v*.*.* runs the three player workflows as reusable workflows on that tag, with every check
+# they run on a push (startup screen, frames, input, audio, saves across restarts, Steam under
+# the GSE emulator on Windows/Linux and Steam-missing on macOS, MCP smoke on Windows), then
+# publishes their packages as release assets. Each zip is a ready-to-run player with the
+# visual-novel-template sample game in game/ (Contents/Resources/game on macOS), and the base
+# that Roves Packmaster and roves-action repack with a developer's own game:
+#   roves_shell_windows{,_steam,_mcp}.zip  Windows x64 (play.exe at the zip root)
+#   roves_shell_macos{,_steam}.zip         macOS arm64 (.app at the zip root, ditto zip)
+#   roves_shell_linux{,_steam}.zip         Linux x64 (Info-ZIP, unix modes and symlinks kept)
+#   SHA256SUMS.txt                         over the seven zips
+# A failed run can be re-cut by deleting the tag and pushing it again (the publish job
+# replaces a release of the same name).
+
+on:
+  push:
+    tags: ['v*.*.*']
+    # Dry run: a push to `release-check/<anything>` (or a manual dispatch) builds, verifies and
+    # zips everything like a tag would, uploads the zips as a workflow artifact and publishes
+    # nothing.
+    branches: ['release-check/**']
+  workflow_dispatch:
+
+# One release per tag; a cancelled run is not a verified one, so queue instead of cancelling.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    uses: ./.github/workflows/cef-netrender-probe.yml
+    with:
+      release: true
+  macos:
+    uses: ./.github/workflows/cef-macos-gate.yml
+  linux:
+    uses: ./.github/workflows/cef-linux-gate.yml
+
+  publish:
+    # Default `needs` semantics: runs only when all three player workflows succeeded.
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: download the Windows packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: visual-novel-template-roves-cef-*
+          path: ${{ runner.temp }}/artifacts
+      - name: download the macOS packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cef-macos-*arm64*
+          path: ${{ runner.temp }}/artifacts
+      - name: download the Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cef-linux-gate-x64*
+          path: ${{ runner.temp }}/artifacts
+      # Artifacts do not keep unix modes, which is why the macOS job uploads a ditto zip and
+      # the Linux job a tar.gz. Windows packages: the package folder's contents at the zip
+      # root. macOS: the ditto zip as uploaded (symlinks, modes and signatures intact). Linux:
+      # the tar's single top folder repacked with Info-ZIP `zip -y` (symlinks as links); the
+      # root owner and setuid bit of chrome-sandbox cannot survive a zip, so it ships 0755 and
+      # the release notes point at the README's commands to re-enable the setuid sandbox.
+      - name: build the release zips
+        shell: bash
+        run: |
+          set -euo pipefail
+          art="$RUNNER_TEMP/artifacts"
+          out="$RUNNER_TEMP/release"
+          mkdir "$out"
+          find "$art" -maxdepth 2 | sort
+          windows_zip() { # <artifact> <package folder> <asset>
+            local dir="$art/$1/$2"
+            test -f "$dir/play.exe" || { echo "::error::artifact $1 has no $2/play.exe"; exit 1; }
+            (cd "$dir" && zip -q -r -X "$out/$3" .)
+          }
+          windows_zip visual-novel-template-roves-cef-windows-x64 visual-novel-template-roves-cef roves_shell_windows.zip
+          windows_zip visual-novel-template-roves-cef-steam-windows-x64 visual-novel-template-roves-cef-steam roves_shell_windows_steam.zip
+          windows_zip visual-novel-template-roves-cef-mcp-windows-x64 visual-novel-template-roves-cef-mcp roves_shell_windows_mcp.zip
+          cp "$art/cef-macos-player-arm64/roves-cef-macos-arm64.zip" "$out/roves_shell_macos.zip"
+          cp "$art/cef-macos-gate-arm64-steam/roves-cef-macos-arm64-steam.zip" "$out/roves_shell_macos_steam.zip"
+          linux_zip() { # <artifact> <tar.gz> <asset>
+            local tgz="$art/$1/$2" work="$RUNNER_TEMP/unpack-$3"
+            test -f "$tgz" || { echo "::error::artifact $1 has no $2"; exit 1; }
+            mkdir "$work"
+            tar -C "$work" -xzf "$tgz"
+            local tops
+            tops="$(find "$work" -mindepth 1 -maxdepth 1)"
+            test "$(printf '%s\n' "$tops" | wc -l)" = 1 && test -d "$tops" \
+              || { echo "::error::$2 does not hold a single top folder"; exit 1; }
+            chmod 0755 "$tops/chrome-sandbox"
+            (cd "$tops" && zip -q -r -y -X "$out/$3" .)
+          }
+          linux_zip cef-linux-gate-x64 roves-cef-linux-gate-x64.tar.gz roves_shell_linux.zip
+          linux_zip cef-linux-gate-x64-steam roves-cef-linux-gate-x64-steam.tar.gz roves_shell_linux_steam.zip
+          (cd "$out" && sha256sum roves_shell_*.zip > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          ls -l "$out"
+      # Layout gate on the zips themselves (what users and the consumers download). Windows
+      # zips are also checked against their own SHA256SUMS.txt the way Packmaster does: every
+      # listed file present with that hash, nothing unlisted.
+      - name: verify the release zips
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - "$RUNNER_TEMP/release" <<'EOF'
+          import hashlib, os, stat, sys, zipfile
+
+          out = sys.argv[1]
+          errors = []
+
+          def fail(asset, message):
+              errors.append(f'{asset}: {message}')
+              print(f'::error::{asset}: {message}')
+
+          def entries(asset):
+              path = os.path.join(out, asset)
+              if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                  fail(asset, 'missing or empty')
+                  return None, {}
+              z = zipfile.ZipFile(path)
+              bad = z.testzip()
+              if bad:
+                  fail(asset, f'corrupt entry {bad}')
+              return z, {i.filename: i for i in z.infolist() if not i.is_dir()}
+
+          def mode(info):
+              return (info.external_attr >> 16) & 0o177777
+
+          def require(asset, files, names):
+              for name in names:
+                  if name not in files:
+                      fail(asset, f'lacks {name}')
+
+          def forbid(asset, files, prefixes):
+              for name in files:
+                  if any(name == p or name.startswith(p + '/') for p in prefixes):
+                      fail(asset, f'must not contain {name}')
+
+          for asset, kind in [('roves_shell_windows.zip', 'plain'), ('roves_shell_windows_steam.zip', 'steam'),
+                              ('roves_shell_windows_mcp.zip', 'mcp')]:
+              z, files = entries(asset)
+              if z is None:
+                  continue
+              require(asset, files, ['play.exe', 'play.dll', 'play.exe.manifest', 'libcef.dll', 'roves.ico',
+                                     'game/index.html', 'PROVENANCE.txt', 'SHA256SUMS.txt'])
+              if kind == 'steam':
+                  require(asset, files, ['steam_api64.dll'])
+              else:
+                  forbid(asset, files, ['steam_api64.dll'])
+              if kind == 'mcp':
+                  require(asset, files, ['mcp/enabled', 'mcp/server.mjs', 'mcp/README.md',
+                                         'mcp/node_modules/@modelcontextprotocol/server/package.json'])
+              else:
+                  forbid(asset, files, ['mcp'])
+              provenance = z.read('PROVENANCE.txt').decode('utf-8-sig') if 'PROVENANCE.txt' in files else ''
+              if (kind == 'mcp') != ('MCP-enabled development package' in provenance):
+                  fail(asset, 'PROVENANCE.txt MCP section does not match the package kind')
+              if (kind == 'steam') != ('Steam variant (built with --features steam)' in provenance):
+                  fail(asset, 'PROVENANCE.txt Steam section does not match the package kind')
+              if 'SHA256SUMS.txt' in files:
+                  listed = {}
+                  for line in z.read('SHA256SUMS.txt').decode('utf-8-sig').splitlines():
+                      if line.strip():
+                          digest, _, name = line.strip().partition('  ')
+                          listed[name] = digest.lower()
+                  actual = {n for n in files if n != 'SHA256SUMS.txt'}
+                  for name in sorted(actual - listed.keys()):
+                      fail(asset, f'{name} not listed in SHA256SUMS.txt')
+                  for name, digest in sorted(listed.items()):
+                      if name not in files:
+                          fail(asset, f'SHA256SUMS.txt lists missing {name}')
+                      elif hashlib.sha256(z.read(name)).hexdigest() != digest:
+                          fail(asset, f'{name} does not match SHA256SUMS.txt')
+                  print(f'{asset}: {len(files)} files, {len(listed)} checksums verified')
+
+          for asset, steam in [('roves_shell_macos.zip', False), ('roves_shell_macos_steam.zip', True)]:
+              z, files = entries(asset)
+              if z is None:
+                  continue
+              tops = {n.split('/', 1)[0] for n in z.namelist()} - {'__MACOSX'}
+              apps = [t for t in tops if t.endswith('.app')]
+              if len(tops) != 1 or len(apps) != 1:
+                  fail(asset, f'expected one .app at the zip root, found {sorted(tops)}')
+                  continue
+              app = apps[0]
+              main = f'{app}/Contents/MacOS/{app[:-4]}'
+              require(asset, files, [main, f'{app}/Contents/Info.plist', f'{app}/Contents/Resources/game/index.html',
+                                     f'{app}/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework'])
+              if main in files and not mode(files[main]) & 0o111:
+                  fail(asset, f'{main} is not executable in the zip')
+              lib = f'{app}/Contents/MacOS/libsteam_api.dylib'
+              (require if steam else forbid)(asset, files, [lib])
+              print(f'{asset}: {app}, {len(files)} files')
+
+          for asset, steam in [('roves_shell_linux.zip', False), ('roves_shell_linux_steam.zip', True)]:
+              z, files = entries(asset)
+              if z is None:
+                  continue
+              require(asset, files, ['roves-cef-linux-gate', 'libcef.so', 'chrome-sandbox', 'icudtl.dat',
+                                     'resources.pak', 'v8_context_snapshot.bin', 'locales/en-US.pak', 'game/index.html'])
+              for name in ['roves-cef-linux-gate', 'chrome-sandbox']:
+                  if name in files and not mode(files[name]) & 0o111:
+                      fail(asset, f'{name} is not executable in the zip (unix modes lost)')
+              if 'chrome-sandbox' in files and mode(files['chrome-sandbox']) & stat.S_ISUID:
+                  fail(asset, 'chrome-sandbox carries a setuid bit without its root owner')
+              (require if steam else forbid)(asset, files, ['libsteam_api.so'])
+              print(f'{asset}: {len(files)} files')
+
+          if errors:
+              sys.exit(f'{len(errors)} release zip check(s) failed')
+          EOF
+      - name: upload the release zips (dry run)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: roves-release-dry-run
+          path: |
+            ${{ runner.temp }}/release/roves_shell_*.zip
+            ${{ runner.temp }}/release/SHA256SUMS.txt
+      - name: publish the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          readme="https://github.com/$GITHUB_REPOSITORY/blob/$tag/support/cef-linux-gate/README.md#running-elsewhere"
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Roves player $tag: the CEF + SDL3 + wgpu desktop player. Every zip is a ready-to-run
+          player package with the [visual-novel-template](https://github.com/DRincs-Productions/visual-novel-template)
+          sample game, and the base Roves Packmaster and roves-action repack with your own game.
+
+          | Asset | Platform |
+          | --- | --- |
+          | \`roves_shell_windows.zip\` | Windows x64 (Direct3D 12): run \`play.exe\` |
+          | \`roves_shell_windows_steam.zip\` | Windows x64, Steam variant (\`steam_api64.dll\`) |
+          | \`roves_shell_windows_mcp.zip\` | Windows x64, MCP-enabled **development** package: lets local AI agents read and drive the running game. Never ship it to players. |
+          | \`roves_shell_macos.zip\` | macOS arm64 (Apple silicon, Metal) \`.app\` |
+          | \`roves_shell_macos_steam.zip\` | macOS arm64, Steam variant (\`libsteam_api.dylib\`) |
+          | \`roves_shell_linux.zip\` | Linux x64 (Vulkan; X11 or Xwayland) |
+          | \`roves_shell_linux_steam.zip\` | Linux x64, Steam variant (\`libsteam_api.so\`) |
+          | \`SHA256SUMS.txt\` | SHA-256 of the zips |
+
+          - Windows and Linux fall back to CPU (software) painting when no GPU frame import is available
+            (for example WARP or Mesa lavapipe); macOS uses Metal.
+          - Steam variants never fail without Steam: the game plays and Steam features report unavailable.
+          - Linux: a zip cannot keep \`chrome-sandbox\`'s root owner and setuid bit. On hosts that
+            restrict unprivileged user namespaces (Ubuntu 23.10+), re-enable it as described in
+            [Running elsewhere]($readme).
+          - macOS: the \`.app\` is not signed with a Developer ID nor notarized.
+          - Windows packages carry \`PROVENANCE.txt\` (sources, pins, licenses) and their own \`SHA256SUMS.txt\`.
+
+          Documentation: [Roves wiki](https://github.com/DRincs-Productions/roves-wiki).
+          Built and verified by [this workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
+          EOF
+          # Re-cut after a failed run: replace a release of the same name (the tag is kept).
+          gh release delete "$tag" --yes || true
+          gh release create "$tag" --verify-tag --title "Roves player $tag" --notes-file "$RUNNER_TEMP/notes.md" \
+            "$RUNNER_TEMP"/release/roves_shell_*.zip "$RUNNER_TEMP/release/SHA256SUMS.txt"
+      - name: check the published assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(printf '%s\n' SHA256SUMS.txt roves_shell_linux.zip roves_shell_linux_steam.zip roves_shell_macos.zip \
+            roves_shell_macos_steam.zip roves_shell_windows.zip roves_shell_windows_mcp.zip roves_shell_windows_steam.zip | sort)"
+          published="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[] | select(.size > 0) | .name' | sort)"
+          echo "$published"
+          if [ "$published" != "$expected" ]; then
+            echo "::error::published assets differ from the expected eight"
+            diff <(echo "$expected") <(echo "$published") || true
+            exit 1
+          fi
+          echo "::notice::release $GITHUB_REF_NAME: all eight assets published"

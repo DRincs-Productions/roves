@@ -1150,6 +1150,14 @@ ships that DLL next to `play.exe`.
   `steam available=false`. None of this is evidence about the real Steam client, the overlay,
   ownership or Steam Cloud: the real-Steam smoke stays manual (`support/steamworks-gate`
   README).
+- **Steam playable package:** `packaging/steam_package.ps1` derives it from the plain package
+  (same `play.exe`, CEF runtime, `game\`, icons) with the Steam `play.dll` and the
+  redistributable `steam_api64.dll`, after checking that every other file of the Steam bundle
+  is byte-identical in the plain bundle; `provenance\imports.txt` and
+  `rust-dependencies.txt` describe the Steam build, `PROVENANCE.txt` gains a "Steam variant"
+  section and `SHA256SUMS.txt` is rebuilt. CI launches it directly with no Steam client
+  (`steam unavailable`, software frame on WARP, startup released, exit 0) and uploads it as
+  `visual-novel-template-roves-cef-steam-windows-x64`.
 
 ## Local MCP bridge (optional, off by default; implemented 2026-11-24, fixture gate passed in CI)
 
@@ -1670,6 +1678,23 @@ branch); `--roves-timings` adds smoke-phase stage summaries and
 `--roves-sustained` the steady-state comparison (alternating trials, above). Building it
 locally needs MSVC, CMake and
 `cargo run --locked --release --bin bundle -- <dir> --release` (downloads CEF 154).
+
+## Releases (`release.yml`, tags `v*.*.*`)
+
+Pushing a tag `v*.*.*` runs this workflow, `cef-macos-gate.yml` and `cef-linux-gate.yml` as
+reusable workflows on the tag, with all their checks (their push triggers are limited to
+branches, so the tag does not run them a second time); this one gets `release: true`, which
+always produces and smokes the MCP-enabled package and titles `PROVENANCE.txt` as a release.
+A publish job (only when all three succeed) turns their artifacts into the release assets
+`roves_shell_windows.zip`, `roves_shell_windows_steam.zip`, `roves_shell_windows_mcp.zip`
+(package contents at the zip root), `roves_shell_macos.zip`, `roves_shell_macos_steam.zip`
+(the gate's `ditto` zip of the `.app`), `roves_shell_linux.zip`, `roves_shell_linux_steam.zip`
+(Info-ZIP with unix modes and symlinks; `chrome-sandbox` ships 0755, see the Linux gate README
+"Running elsewhere") and `SHA256SUMS.txt`. Before publishing it checks each zip's layout and
+the Windows packages against their own `SHA256SUMS.txt`; afterwards it requires all eight
+assets on the release. Each zip carries the visual-novel-template sample game and is the base
+Roves Packmaster and roves-action repack with a developer's game. Re-cut a failed release by
+deleting and pushing the tag again (the job replaces a release of the same name).
 
 ## CI (`cef-netrender-probe.yml`, push on this directory or manual)
 

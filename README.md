@@ -9,6 +9,13 @@
 > loaded and painted, and keeps saves between launches. An optional, off-by-default local
 > MCP bridge lets AI agents read and drive a running game during development (`--roves-mcp`
 > or an MCP-enabled development package; see the probe README, "Local MCP bridge").
+>
+> **Releases:** pushing a tag `v*.*.*` (first: v0.9.0) builds and verifies the CEF player on
+> Windows x64, macOS arm64 and Linux x64 and publishes ready-to-run zips with the
+> visual-novel-template sample game: `roves_shell_windows.zip`, `roves_shell_macos.zip`,
+> `roves_shell_linux.zip`, their `_steam` variants, the development-only
+> `roves_shell_windows_mcp.zip` and `SHA256SUMS.txt`. They are also the bases that Roves
+> Packmaster and roves-action repack with a game (probe README, "Releases").
 
 **Roves** (an anagram of *Servo*) is a customized fork of the [Servo](https://servo.org/)
 web engine, repurposed as a runtime for shipping **web-based games** as real native

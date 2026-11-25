@@ -18,10 +18,14 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 macOS feasibility gate
 # `steam` feature (README "Steam") ships libsteam_api.dylib in Contents/MacOS only for the
 # main executable and, with no Steam client on the runner, must log `steam unavailable` and
 # play like the standard one. Separate from cef-netrender-probe.yml (Windows, unchanged).
-# Never gates a release.
+# Also called by release.yml (workflow_call) on a v*.*.* tag: the same build and checks, and
+# its two zipped .app artifacts become the macOS release assets.
 
 on:
   push:
+    # Branches only: a tag push runs this workflow through release.yml, not a second time here
+    # (path filters are not evaluated for tag pushes).
+    branches: ['**', '!release-check/**']
     paths:
       - 'support/cef-macos-gate/**'
       # Vendored welding (temporary fork, ROVES_PATCHES.md).
@@ -47,6 +51,8 @@ on:
       - 'support/cef-netrender-probe/src/steam.rs'
       - '.github/workflows/cef-macos-gate.yml'
   workflow_dispatch:
+  # release.yml (no inputs: a release runs exactly the checks of a push).
+  workflow_call:
 
 concurrency:
   group: cef-macos-gate-${{ github.ref }}
