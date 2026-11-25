@@ -13,3 +13,9 @@ globalThis.rovesMcpEntry = {
     : null,
 };
 console.log(`roves-mcp-entry enabled=${globalThis.rovesMcpEntry.enabled}`);
+// What `isAvailable()` reads: the host API marker, defined in every game-mode launch.
+const host = window.__ROVES__;
+globalThis.rovesHostEntry = host ?? null;
+console.log(
+  `roves-host-entry transport=${host?.transport} api=${host?.api} frozen=${Object.isFrozen(host ?? {}) && host !== undefined}`,
+);

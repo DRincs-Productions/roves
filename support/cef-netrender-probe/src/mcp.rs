@@ -11,15 +11,11 @@
 //! opened.
 //!
 //! Page capability (`isMcpEnabled()` of `@drincs/roves-api/core`): the only thing the page
-//! sees is a read-only `window.__ROVES_MCP__ === true` in the top-level game document. Once
-//! the bridge is running, the browser starts on `about:blank`, the bridge enables the CDP Page
-//! domain (Blink injects document-start scripts only from the enabled page agent's
-//! main-world-context probe) and registers a document-start script with
-//! `Page.addScriptToEvaluateOnNewDocument` (both stored by Chromium in the DevTools session
-//! and re-applied in every later renderer, across process swaps); the host loads the game URL
-//! only after that registration settled. A refused or late registration loads the game
-//! without the marker. Page domain events are drained and dropped; CEF keeps its own
-//! JavaScript dialog handling, so dialogs are not delegated to the bridge.
+//! sees of the bridge is a read-only `window.__ROVES_MCP__ === true` in the top-level game
+//! document, registered together with the host marker `window.__ROVES__` by `page_init.rs`
+//! before the game URL loads (every game-mode launch has that registration; the bridge only
+//! adds its marker to the script). Page domain events are drained and dropped; CEF keeps its
+//! own JavaScript dialog handling, so dialogs are not delegated to the bridge.
 //!
 //! Requests are newline-delimited JSON `{"method": ..., "params": {...}}`, handled on the
 //! main loop: `state` (host-side state), `evaluate` (CDP `Runtime.evaluate` through welding's
@@ -41,8 +37,7 @@ use welding::{CefSurfaceProducer as _, windows_cef::WindowsCefProducer};
 
 use crate::mcp_rules::{
     CONSOLE_MESSAGE_MAX, CONSOLE_RING, MAX_EXPRESSION, MAX_REQUEST_LINE, MAX_RESULT, McpKey,
-    NONCE_BYTES, TOKEN_BYTES, hex, page_capability_script, pipe_name, token_matches,
-    truncate_chars, valid_text,
+    NONCE_BYTES, TOKEN_BYTES, hex, pipe_name, token_matches, truncate_chars, valid_text,
 };
 
 /// CDP message ids of the bridge start here, far from welding's own screenshot ids (from 1).
@@ -59,36 +54,6 @@ const EVALUATE_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_TIMEOUT_MS: u64 = 1000;
 /// Requests queued between the pipe thread and the main loop.
 const QUEUE: usize = 8;
-/// The page capability registration (browser ready, CDP reply) must settle within this time
-/// of the first attempt; otherwise the game loads without the marker.
-const CAPABILITY_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Registration of the page capability script (module docs).
-enum Capability {
-    /// Not sent yet (the browser may not exist); `deadline` starts at the first attempt.
-    Unsent {
-        script: String,
-        deadline: Option<Instant>,
-    },
-    /// `Page.enable` sent as CDP message `id`. Blink injects scripts registered with
-    /// `Page.addScriptToEvaluateOnNewDocument` only from `InspectorPageAgent::
-    /// DidCreateMainWorldContext`, a probe the page agent receives only once the Page domain
-    /// is enabled; without it the registration succeeds but nothing ever runs.
-    Enabling {
-        id: i64,
-        script: String,
-        deadline: Instant,
-    },
-    /// Page domain enabled; the script is sent next turn.
-    Enabled { script: String, deadline: Instant },
-    /// `Page.addScriptToEvaluateOnNewDocument` sent as CDP message `id`.
-    Sent { id: i64, deadline: Instant },
-    /// Reply or failure, not handed to the host yet.
-    Ready(Result<String, String>),
-    /// Handed to the host; `page_capability` holds the outcome.
-    Settled,
-}
-
 /// One parsed request.
 pub(crate) enum Call {
     State,
@@ -157,9 +122,6 @@ pub(crate) struct Bridge {
     pub(crate) title: Option<String>,
     console: VecDeque<Value>,
     pub(crate) calls: u64,
-    capability: Capability,
-    /// `None` until the registration settled, then whether the marker is registered.
-    pub(crate) page_capability: Option<bool>,
 }
 
 impl Drop for Bridge {
@@ -200,8 +162,6 @@ fn random_hex(len: usize) -> Result<String, String> {
 
 /// Opens the pipe, then publishes the session record. `origin`: the game's loopback origin.
 pub(crate) fn start(origin: &str) -> Result<Bridge, String> {
-    let script = page_capability_script(origin)
-        .ok_or_else(|| format!("unexpected game origin {origin:?}"))?;
     let token = random_hex(TOKEN_BYTES)?;
     let pid = std::process::id();
     let pipe = pipe_name(pid, &random_hex(NONCE_BYTES)?);
@@ -242,11 +202,6 @@ pub(crate) fn start(origin: &str) -> Result<Bridge, String> {
         title: None,
         console: VecDeque::new(),
         calls: 0,
-        capability: Capability::Unsent {
-            script,
-            deadline: None,
-        },
-        page_capability: None,
     })
 }
 
@@ -492,149 +447,54 @@ impl Bridge {
         }
     }
 
-    /// Advances the page capability registration; returns its outcome once, when it settled
-    /// (`Ok(identifier)` or the reason it is unavailable). The host loads the game URL then.
-    pub(crate) fn capability_step(
-        &mut self,
-        producer: &mut WindowsCefProducer,
-    ) -> Option<Result<String, String>> {
-        let now = Instant::now();
-        match &mut self.capability {
-            Capability::Unsent { script, deadline } => {
-                let deadline = *deadline.get_or_insert(now + CAPABILITY_TIMEOUT);
-                let script = std::mem::take(script);
-                // The Page domain stays enabled for the whole session: Chromium keeps it in
-                // the DevTools session state and re-enables it in every later renderer, so
-                // the script also runs after the about:blank -> game process swap.
-                match self.send_cdp(producer, "Page.enable", json!({})) {
-                    Ok(id) => {
-                        self.capability = Capability::Enabling {
-                            id,
-                            script,
-                            deadline,
-                        };
-                    },
-                    // Typically "the browser is not ready yet": retried next turn.
-                    Err(error) if now >= deadline => {
-                        self.capability = Capability::Ready(Err(error));
-                    },
-                    Err(_) => {
-                        self.capability = Capability::Unsent {
-                            script,
-                            deadline: Some(deadline),
-                        };
-                    },
-                }
-            },
-            Capability::Enabled { script, deadline } => {
-                let deadline = *deadline;
-                let params = json!({ "source": script.as_str(), "runImmediately": false });
-                match self.send_cdp(producer, "Page.addScriptToEvaluateOnNewDocument", params) {
-                    Ok(id) => self.capability = Capability::Sent { id, deadline },
-                    Err(error) if now >= deadline => {
-                        self.capability = Capability::Ready(Err(error));
-                    },
-                    Err(_) => {},
-                }
-            },
-            Capability::Enabling { deadline, .. } | Capability::Sent { deadline, .. }
-                if now >= *deadline =>
-            {
-                self.capability = Capability::Ready(Err("no DevTools reply in time".into()));
-            },
-            Capability::Enabling { .. }
-            | Capability::Sent { .. }
-            | Capability::Ready(_)
-            | Capability::Settled => {},
-        }
-        if !matches!(self.capability, Capability::Ready(_)) {
-            return None;
-        }
-        let Capability::Ready(outcome) =
-            std::mem::replace(&mut self.capability, Capability::Settled)
-        else {
-            unreachable!("checked above");
-        };
-        self.page_capability = Some(outcome.is_ok());
-        Some(outcome)
-    }
-
-    /// Whether the game URL still waits for the capability registration.
-    pub(crate) fn capability_pending(&self) -> bool {
-        self.page_capability.is_none()
-    }
-
-    /// Drains welding's DevTools queue (it is bounded, so it is polled every loop turn while
-    /// the bridge is on), advances the capability registration and matching evaluations and
-    /// expires late ones. Other messages (Page domain events, `releaseObjectGroup` replies)
+    /// One DevTools message not consumed by the page marker registration: advances the
+    /// matching evaluation. Other messages (Page domain events, `releaseObjectGroup` replies)
     /// are dropped.
-    pub(crate) fn poll_devtools(&mut self, producer: &mut WindowsCefProducer) {
-        while let Some(message) = producer.poll_devtools_message() {
-            let Ok(message) = serde_json::from_str::<Value>(&message) else {
-                continue;
-            };
-            if let Capability::Enabling { id, .. } = self.capability
-                && message.get("id").and_then(Value::as_i64) == Some(id)
-            {
-                let Capability::Enabling {
-                    script, deadline, ..
-                } = std::mem::replace(&mut self.capability, Capability::Settled)
-                else {
-                    unreachable!("checked above");
-                };
-                self.capability = match enable_reply(&message) {
-                    Ok(()) => Capability::Enabled { script, deadline },
-                    Err(error) => Capability::Ready(Err(error)),
-                };
-                continue;
-            }
-            if let Capability::Sent { id, .. } = self.capability
-                && message.get("id").and_then(Value::as_i64) == Some(id)
-            {
-                self.capability = Capability::Ready(capability_reply(&message));
-                continue;
-            }
-            let Some(pending) = message
-                .get("id")
-                .and_then(Value::as_i64)
-                .and_then(|id| self.pending.remove(&id))
-            else {
-                continue;
-            };
-            match (pending.stage, evaluation_step(&message)) {
-                (Stage::Evaluate, Step::Fetch(object)) => {
-                    let params = json!({
-                        "objectId": object,
-                        "functionDeclaration": "function () { return this; }",
-                        "objectGroup": pending.group,
-                        "returnByValue": true,
-                        "awaitPromise": false,
-                        "userGesture": false,
-                    });
-                    match self.send_cdp(producer, "Runtime.callFunctionOn", params) {
-                        Ok(id) => {
-                            self.pending.insert(
-                                id,
-                                Pending {
-                                    stage: Stage::ByValue,
-                                    ..pending
-                                },
-                            );
-                        },
-                        Err(error) => self.finish(producer, pending, Err(error)),
-                    }
-                },
-                (Stage::Evaluate, Step::Done(result)) => self.finish(producer, pending, result),
-                // By value there is no reference left to fetch: a by-value object without
-                // `value` is not JSON-serializable.
-                (Stage::ByValue, Step::Fetch(_)) => self.finish(
-                    producer,
-                    pending,
-                    Err("evaluate: the result is not JSON-serializable".into()),
-                ),
-                (Stage::ByValue, Step::Done(result)) => self.finish(producer, pending, result),
-            }
+    pub(crate) fn devtools_message(&mut self, producer: &mut WindowsCefProducer, message: &Value) {
+        let Some(pending) = message
+            .get("id")
+            .and_then(Value::as_i64)
+            .and_then(|id| self.pending.remove(&id))
+        else {
+            return;
+        };
+        match (pending.stage, evaluation_step(message)) {
+            (Stage::Evaluate, Step::Fetch(object)) => {
+                let params = json!({
+                    "objectId": object,
+                    "functionDeclaration": "function () { return this; }",
+                    "objectGroup": pending.group,
+                    "returnByValue": true,
+                    "awaitPromise": false,
+                    "userGesture": false,
+                });
+                match self.send_cdp(producer, "Runtime.callFunctionOn", params) {
+                    Ok(id) => {
+                        self.pending.insert(
+                            id,
+                            Pending {
+                                stage: Stage::ByValue,
+                                ..pending
+                            },
+                        );
+                    },
+                    Err(error) => self.finish(producer, pending, Err(error)),
+                }
+            },
+            (Stage::Evaluate, Step::Done(result)) => self.finish(producer, pending, result),
+            // By value there is no reference left to fetch: a by-value object without
+            // `value` is not JSON-serializable.
+            (Stage::ByValue, Step::Fetch(_)) => self.finish(
+                producer,
+                pending,
+                Err("evaluate: the result is not JSON-serializable".into()),
+            ),
+            (Stage::ByValue, Step::Done(result)) => self.finish(producer, pending, result),
         }
+    }
+
+    /// Answers evaluations with no CDP reply in time.
+    pub(crate) fn expire(&mut self, producer: &mut WindowsCefProducer) {
         let now = Instant::now();
         let expired: Vec<i64> = self
             .pending
@@ -674,31 +534,6 @@ impl Bridge {
     pub(crate) fn recent_console(&self) -> Value {
         Value::Array(self.console.iter().cloned().collect())
     }
-}
-
-/// Maps the CDP reply to `Page.enable`: success, or the reason the marker is unavailable.
-fn enable_reply(message: &Value) -> Result<(), String> {
-    if let Some(error) = message.pointer("/error/message").and_then(Value::as_str) {
-        return Err(format!("Page.enable: {}", truncate_chars(error, 512)));
-    }
-    if message.get("result").is_some_and(Value::is_object) {
-        Ok(())
-    } else {
-        Err("Page.enable: invalid DevTools reply".to_owned())
-    }
-}
-
-/// Maps the CDP reply to `Page.addScriptToEvaluateOnNewDocument`: its script identifier, or
-/// the reason the marker is unavailable.
-fn capability_reply(message: &Value) -> Result<String, String> {
-    if let Some(error) = message.pointer("/error/message").and_then(Value::as_str) {
-        return Err(truncate_chars(error, 512).to_owned());
-    }
-    message
-        .pointer("/result/identifier")
-        .and_then(Value::as_str)
-        .map(|id| truncate_chars(id, 64).to_owned())
-        .ok_or_else(|| "invalid DevTools reply".to_owned())
 }
 
 /// Next step of an evaluation after one CDP reply.

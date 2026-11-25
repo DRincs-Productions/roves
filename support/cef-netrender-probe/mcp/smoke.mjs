@@ -13,8 +13,9 @@
 //          text delivered to the page, clean exit and session removal.
 // disabled: the plain package's play.exe (no mcp\enabled) on the fixture, twice: without
 //          --roves-mcp, and with --roves-mcp while the bridge cannot start (LOCALAPPDATA
-//          points at a file). Both must load the game directly with the marker absent in the
-//          entry script and the child frame, publish no session record and exit 0.
+//          points at a file). Both must load the game with the MCP marker absent in the
+//          entry script and the child frame (the host API marker __ROVES__ present), publish
+//          no session record and exit 0.
 // package: the package's play.exe launched directly (the package marker turns MCP on);
 //          discovery without a PID, state and evaluation on the packaged game; interaction
 //          is required to succeed only if the startup screen was released (real GPU),
@@ -252,10 +253,12 @@ async function fixture([exe, fixtureDir, out]) {
     // The page's CSP (script-src 'self') still blocks eval inside an evaluation.
     assert.equal((await evaluate(
       "(() => { try { eval('1'); return 'allowed'; } catch (e) { return e.name; } })()")).value, "EvalError");
-    // Nothing of the bridge is visible to the page except the boolean marker.
+    // Nothing of the bridge is visible to the page except the boolean marker (and the host
+    // API marker every game-mode launch defines).
     assert.deepEqual((await evaluate(
       "Object.getOwnPropertyNames(globalThis).filter((k) => /roves|mcp|cef/i.test(k) && " +
-      "!['rovesMcpFixture', 'rovesMcpEntry'].includes(k))")).value, [MARKER]);
+      "!['rovesMcpFixture', 'rovesMcpEntry', 'rovesHostEntry'].includes(k)).sort()")).value,
+      ["__ROVES_MCP__", "__ROVES__"]);
     log("evaluation checks passed");
 
     assert.equal((await client.value("click", { x: 100, y: 60 })).forwarded, 2);
@@ -304,7 +307,8 @@ async function fixture([exe, fixtureDir, out]) {
     assert.ok(!existsSync(recordPath(game.pid)), "session record left behind");
     const text = checkLog(gameLog, record, "Switch");
     assert.ok(!/ FAIL /.test(text), "FAIL line in the game log");
-    assert.match(text, /mcp page capability registered identifier=/);
+    assert.match(text, /page markers registered identifier=\S+ mcp=true/);
+    assert.match(text, /message="roves-host-entry transport=http api=\/__roves\/ frozen=true"/);
     assert.match(text, /game navigation url=http:\/\/127\.0\.0\.1:\d+\//);
     assert.match(text, /message="roves-mcp-entry enabled=true"/);
     assert.match(text, /message="roves-mcp-frame enabled=false"/);
@@ -404,10 +408,13 @@ async function disabled([exe, fixtureDir, out]) {
       assert.match(text, /load-end status=200 url=http:\/\/127\.0\.0\.1:\d+\/ ok=true/);
       assert.match(text, /message="roves-mcp-entry enabled=false"/);
       assert.match(text, /message="roves-mcp-frame enabled=false"/);
+      // The host API marker (`isAvailable()`) does not depend on the bridge.
+      assert.match(text, /page markers registered identifier=\S+ mcp=false/);
+      assert.match(text, /message="roves-host-entry transport=http api=\/__roves\/ frozen=true"/);
       // Host lines only (`roves-cef-nr <event>`): the fixture's own title, "roves mcp
       // fixture", is logged as `roves-cef-nr title roves mcp fixture` and is not a bridge line.
-      assert.ok(!/^roves-cef-nr (mcp (enabled|page capability|bootstrap)|game navigation)/m.test(text),
-        `${name}: bridge or bootstrap lines in the game log`);
+      assert.ok(!/^roves-cef-nr mcp (enabled|page capability|bootstrap)/m.test(text),
+        `${name}: bridge lines in the game log`);
       const bridgeLines = text.split(/\r?\n/).filter((line) => line.startsWith("roves-cef-nr mcp "));
       if (name === "off") {
         assert.deepEqual(bridgeLines, [], "off: mcp line in the game log");
@@ -415,7 +422,7 @@ async function disabled([exe, fixtureDir, out]) {
         assert.equal(bridgeLines.length, 1, `unavailable: ${JSON.stringify(bridgeLines)}`);
         assert.match(bridgeLines[0], /^roves-cef-nr mcp unavailable source=Switch error=/);
       }
-      log(`${name}: marker absent, game loaded directly`);
+      log(`${name}: MCP marker absent, host marker present`);
     } finally {
       if (game.exitCode === null) game.kill();
     }

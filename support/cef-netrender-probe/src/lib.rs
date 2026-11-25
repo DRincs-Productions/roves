@@ -15,6 +15,8 @@ mod mcp;
 #[cfg(windows)]
 mod mcp_rules;
 #[cfg(windows)]
+mod page_init;
+#[cfg(windows)]
 mod splash;
 #[cfg(windows)]
 mod stall;

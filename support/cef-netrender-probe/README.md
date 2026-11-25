@@ -1044,6 +1044,58 @@ the release onto the template's menu, input, closing, the icon in Explorer and t
 save in the template, close, start again and load the save; start a second copy while the first
 runs (dialog "already running", exit 6, first copy unaffected).
 
+## Host API (`/__roves/`, implemented 2026-11-25, not yet run in CI)
+
+Games call the player through `@drincs/roves-api` (`core`, `saves`). The Servo shell served
+those calls on the custom schemes `roves:` and `saves:`; welding owns `CefApp` and the
+render-process handler, so registering schemes would need a welding fork (rejected). The
+player instead serves same-origin routes on the game's loopback server:
+`http://127.0.0.1:<port>/__roves/<module>/<cmd>` (`support/cef-window-probe/src/host_api.rs`,
+shared through `#[path]` with the macOS and Linux gates; modules are a name -> handler map,
+Steam is a later entry). A game directory must not contain a `__roves` folder: the prefix is
+never served from the game files.
+
+- **Discovery:** every game-mode launch defines `window.__ROVES__ = Object.freeze({ transport:
+  "http", api: "/__roves/" })` (read-only, top-level game document only, before any page
+  script) through the same CDP document-start registration as the MCP marker (section "Local
+  MCP bridge", `page_init.rs`). roves-api's `isAvailable()` accepts it, and `core`/`saves`
+  then call the routes; older shells keep `__ROVES__ === true` and the schemes.
+- **Request guard** (after Chromium's DevTools HTTP handler,
+  `content/browser/devtools/devtools_http_handler.cc` at `f2700724f59f`:
+  `RequestIsSafeToServe` ~134-142 refuses a `Host` that is not an IP or localhost, the
+  DNS-rebinding defence; `OnWebSocketRequest` ~866-890 refuses a foreign `Origin`). Stricter
+  because only the game document may call: `Host` exactly `127.0.0.1:<port>`; header
+  `X-Roves-Api: 1` required (a cross-origin page needs a CORS preflight for it); `OPTIONS` is
+  always refused and no response carries a CORS header; an `Origin`, when sent, must be the
+  server origin; `Sec-Fetch-Site`, when sent, must be `same-origin`. Refusals are `403`.
+  Every reply is `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`.
+- **core:** `system_info` (the Servo shape: `os_type` `windows`/`macos`/Linux `ID`,
+  `os_version` (`null` on Windows: no OS-version crate in the graph; Linux `VERSION_ID`,
+  macOS `ProductVersion`), `bitness`, `architecture`, `engine_version` =
+  `roves-cef-player cef-<CEF version>`); `exit` (`POST`) closes through the same path as an
+  OS close request (log `close requested by the game command=exit`); `clear_content_cache`
+  (`POST`) has no extraction cache to clear (the game is served from the package and every
+  response is revalidated, section "Loopback cache policy") and keeps its documented
+  contract: the game closes. `is_available` answers `true`. Servo's `save_file` is not ported.
+- **saves:** files `<profile root>\saves\<key>.save` of the persistent player profile;
+  without one (`--roves-game-dir`, `--roves-isolated-profile`) every command answers the
+  Servo "unavailable" values (`is_available` false). Commands and JSON replies are the
+  Servo ones (`read` returns base64 or `null`, `most_recent` `{key, modifiedMs}`); `write`,
+  `delete`, `clear` need `POST`, `write` takes the raw body (at most 32 MiB). Keys keep the
+  Servo rules (non-empty, at most 200 bytes, not `.`/`..`, no `/ \ :` or NUL) plus portable
+  file names (no other control character, none of `< > " | ? *`, no trailing dot or space, no
+  Windows device name such as `CON` or `COM1`); invalid keys answer `400`. Writes go through
+  `tempfile`'s `NamedTempFile` in the same directory, `sync_all`, then `persist` (rename over
+  the target); leftover temporary files are removed when the server starts. File I/O runs on
+  tokio's blocking pool, so game files keep being served.
+- **Tests:** `support/cef-host-api-tests` runs `server.rs` and `host_api.rs` under plain
+  `cargo test` (guard, keys, saves round trip, routes, a save surviving a server restart);
+  it is a separate CEF-free crate because the players' test binaries must link CEF, which
+  their `dox` type-check feature does not provide. CI also runs the packaged player on
+  `host-api-fixture/` three times with one persistent profile (write + `exit`, read back after
+  a restart + `exit`, then `curl` refusals for a foreign Host, a missing header, a foreign
+  Origin and a preflight).
+
 ## Local MCP bridge (optional, off by default; implemented 2026-11-24, fixture gate passed in CI)
 
 Lets an MCP client (an AI agent, an IDE) read the state of a running game and interact with
@@ -1110,25 +1162,28 @@ Pieces (`src/mcp.rs`, pure rules in `src/mcp_rules.rs`, stdio server in `mcp/`):
   several games it asks for `--pid <PID>`. Consumer instructions: `mcp/README.md`.
 - **Page capability `isMcpEnabled()`** (2026-11-25, implemented, not yet built or run in
   CI). `@drincs/roves-api/core`'s `isMcpEnabled()` reads `window.__ROVES_MCP__ === true`
-  synchronously; `isAvailable()` (Servo's `__ROVES__`, not set by this player) is unchanged.
-  Delivery: only when `mcp::start` succeeded (pipe open, record written), the producer is
-  created on `about:blank` instead of the game URL. Every loop turn the bridge tries CDP
+  synchronously; `isAvailable()` reads the host marker `__ROVES__` (section "Host API").
+  Delivery (since 2026-11-25 in `page_init.rs`, shared with `__ROVES__`, so every game-mode
+  launch has it; the bridge only adds `__ROVES_MCP__` to the script when `mcp::start`
+  succeeded): the producer is created on `about:blank` instead of the game URL. Every loop
+  turn the host tries CDP
   `Page.enable` through the same in-process DevTools channel until the browser exists; after
   its successful reply it sends `Page.addScriptToEvaluateOnNewDocument` (`source` only, main
-  world, `runImmediately: false`); when that reply carries an `identifier` (log `mcp page
-  capability registered identifier=<id>`) the
+  world, `runImmediately: false`); when that reply carries an `identifier` (log `page markers
+  registered identifier=<id> mcp=<bool>`) the
   host calls welding's `navigate_to_url(<origin>/)` (log `game navigation url=...`). The
-  script (`mcp_rules::page_capability_script`, unit-tested) returns early unless `window.top
+  script (`mcp_rules::page_marker_script`, unit-tested) returns early unless `window.top
   === window` and `location.origin` equals the game's `http://127.0.0.1:<port>` literal, then
-  defines `__ROVES_MCP__` as `{ value: true, writable: false, enumerable: false,
-  configurable: false }`. It contains nothing else: no pipe, no token, no record path. A CDP
-  error, or no browser/reply within 10 s, logs `mcp page capability unavailable error=...`
-  and loads the game anyway without the marker (fail-closed; `state.page_capability`
+  defines `__ROVES__` (frozen host marker) and, with the bridge, `__ROVES_MCP__` as `{ value:
+  true, writable: false, enumerable: false, configurable: false }`. It contains nothing else:
+  no pipe, no token, no record path. A CDP error, or no browser/reply within 10 s, logs `page
+  markers unavailable mcp=<bool> error=...` and loads the game anyway without the markers
+  (fail-closed; `state.page_capability`
   `pending|registered|unavailable`). `evaluate` is refused until the registration settled, so
   it never runs in the bootstrap document. Navigation events of `about:blank` are skipped
-  (log `mcp bootstrap event skipped ...`) only until the game commits on its origin
+  (log `page bootstrap event skipped ...`) only until the game commits on its origin
   (load-end: until the accepted game load-end); afterwards `about:blank` is an off-origin
-  navigation as before. Bridge off or unavailable: initial URL, events and log unchanged.
+  navigation as before. Bridge off or unavailable: the same bootstrap, without the MCP marker.
   **Why this guarantees the entry script:** Chromium stores the script in the DevTools
   session's browser-originating state before answering
   (`content/browser/devtools/protocol/page_handler.cc`
@@ -1160,8 +1215,9 @@ Pieces (`src/mcp.rs`, pure rules in `src/mcp_rules.rs`, stdio server in `mcp/`):
   be a `CefSurfaceConfig` field for document-start main-world scripts, applied by welding's
   render-process handler in `OnContextCreated` (with the frame's top-level/origin known
   there) and delivered through `extra_info`. The CDP route above needs no fork and uses
-  only welding's public DevTools channel, so it was chosen; it costs one CDP round trip and
-  an `about:blank` commit before the game URL in MCP-enabled launches only. Rejected:
+  only welding's public DevTools channel, so it was chosen; it costs two CDP round trips and
+  an `about:blank` commit before the game URL (every game-mode launch since the host API
+  marker; the cost is visible in the startup timeline, not measured separately yet). Rejected:
   `execute_script`/`request_script_result` after load-start (races the page's own scripts),
   a `<script>` rewritten into the served HTML (changes the game's bytes and CSP), a URL
   parameter or cookie (page-controlled, not top-level-only).

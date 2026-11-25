@@ -47,7 +47,18 @@ pub struct Server {
 
 /// Binds synchronously (so the origin is known before CEF starts) and serves on a dedicated
 /// thread. Port 0 picks a free port, giving every run its own origin.
+#[allow(dead_code)]
 pub fn start(root: &Path, port: u16) -> io::Result<Server> {
+    start_with(root, port, |_| Router::new())
+}
+
+/// [`start`] plus `routes`, built once the origin is known and matched before the game files
+/// (the players' host API, `host_api.rs`, under `/__roves/`).
+pub fn start_with(
+    root: &Path,
+    port: u16,
+    routes: impl FnOnce(&str) -> Router,
+) -> io::Result<Server> {
     refuse_live_listener(port)?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
     listener.set_nonblocking(true)?;
@@ -56,7 +67,7 @@ pub fn start(root: &Path, port: u16) -> io::Result<Server> {
         dir: ServeDir::new(root),
         token: instance_token(),
     };
-    let app = Router::new().fallback(move |req: Request| files.clone().serve(req));
+    let app = routes(&origin).fallback(move |req: Request| files.clone().serve(req));
     let (shutdown, stopped) = oneshot::channel::<()>();
     let thread = std::thread::Builder::new()
         .name("roves-cef-loopback".into())
@@ -93,10 +104,9 @@ impl Server {
 /// The standard library sets `SO_REUSEADDR` on Unix listeners (needed to rebind the stored
 /// origin port while old connections sit in TIME_WAIT). Darwin then also accepts a second
 /// listener on the exact same address when the first one set `SO_REUSEADDR` too, so the
-/// player could share the saves' origin with another app (CI run 45623549062). A live
-/// listener answers a loopback connect; TIME_WAIT leftovers do not. Linux and Windows
-/// already refuse the duplicate bind, so this only runs on macOS.
-#[cfg(target_os = "macos")]
+/// player could share the saves' origin with another app (CI run 45623549062); Linux
+/// accepted it too (CI run 45645159198). A live listener answers a loopback connect;
+/// TIME_WAIT leftovers do not. Cheap, so it runs on every platform.
 fn refuse_live_listener(port: u16) -> io::Result<()> {
     use std::{
         net::{SocketAddr, TcpStream},
@@ -113,11 +123,6 @@ fn refuse_live_listener(port: u16) -> io::Result<()> {
         )),
         Err(_) => Ok(()),
     }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn refuse_live_listener(_port: u16) -> io::Result<()> {
-    Ok(())
 }
 
 /// Unique per server start: wall-clock nanoseconds and process id, hex (ETag-safe).

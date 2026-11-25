@@ -17,6 +17,9 @@ on:
       - 'support/cef-netrender-probe/**'
       # Compiled into the probe's opt-in game mode through `#[path]`.
       - 'support/cef-window-probe/src/server.rs'
+      # The players' shared host API and its CEF-free unit-test crate.
+      - 'support/cef-window-probe/src/host_api.rs'
+      - 'support/cef-host-api-tests/**'
       # Embedded by the game-mode startup screen and play.exe's fallback icon.
       - 'icon.png'
       # Rasterized at build time (build.rs) into the startup-screen wordmark.
@@ -111,6 +114,13 @@ jobs:
           users30="$(tree -i wgpu@30.0.2 | grep '^1' | cut -d' ' -f1 | sed 's/^1//' | sort | tr '\n' ' ')"
           echo "::notice::wgpu 30.0.2 used by: $users30"
           test "$users30" = "cef " || { echo "::error::wgpu 30 reached by something other than cef"; exit 1; }
+      # Loopback server + host API unit tests (request guard, slot names, atomic saves, routes,
+      # a save surviving a server restart): the shared files under plain `cargo test`, in a
+      # CEF-free crate (README "Host API").
+      - name: host API unit tests
+        shell: bash
+        working-directory: support/cef-host-api-tests
+        run: cargo test --locked 2>&1 | tee "$RUNNER_TEMP/cef-host-api-tests.log"; test "${PIPESTATUS[0]}" = 0
       - name: build and bundle (release, sandbox)
         id: bundle
         shell: bash
@@ -1602,6 +1612,103 @@ jobs:
           Start-Sleep -Seconds 2
           if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
           if ($failed) { exit 1 }
+      # Host API (README "Host API") in the real player: a throw-away copy of the package whose
+      # game is support/cef-netrender-probe/host-api-fixture, with a persistent profile under
+      # --roves-cache-dir. Launch 1 writes a save and closes itself through core/exit; launch 2
+      # (a new process) reads the save back and closes itself; launch 3 stays open while the
+      # runner calls the routes: the game's own request shape answers 200, a foreign Host
+      # (DNS rebinding), a missing X-Roves-Api header and a CORS preflight answer 403 without
+      # any CORS header. On WARP a launch may end on the no-fresh-frame path (exit 2).
+      - name: host API in the packaged player (saves across restarts, exit, refusals, WARP)
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: pwsh
+        run: |
+          $src = '${{ steps.package.outputs.dir }}'
+          $out = Join-Path $env:RUNNER_TEMP 'cef-host-api'
+          if (Test-Path -LiteralPath $out) { Write-Output "::error::$out already exists"; exit 1 }
+          $pkg = Join-Path $out 'package'
+          $root = Join-Path $out 'profile'
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+          Get-ChildItem -LiteralPath $src -Force | Where-Object Name -ne 'game' | Copy-Item -Destination $pkg -Recurse
+          Copy-Item -LiteralPath 'support/cef-netrender-probe/host-api-fixture' -Destination (Join-Path $pkg 'game') -Recurse
+          $exe = Join-Path $pkg 'play.exe'
+          if (Get-Process play -ErrorAction SilentlyContinue) {
+            Get-Process play -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+          }
+          $failed = $false
+          function Start-Player([string]$name, [int]$autoCloseMs) {
+            $log = Join-Path $out "$name.log"
+            $arguments = @('--roves-no-error-dialog', "--roves-cache-dir=$root", '--roves-timeout-ms=60000',
+              "--roves-auto-close-ms=$autoCloseMs", "--roves-log=$log", "--log-file=$(Join-Path $out "$name-cef-debug.log")")
+            $p = Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $out -PassThru
+            $null = $p.Handle
+            return @{ process = $p; log = $log; name = $name }
+          }
+          function Wait-Player($run, [int]$seconds) {
+            if (-not $run.process.WaitForExit($seconds * 1000)) {
+              Get-Process play -ErrorAction SilentlyContinue | Stop-Process -Force
+              $run.code = -1
+            } else { $run.code = $run.process.ExitCode }
+            Start-Sleep -Seconds 2
+            $run.lines = if (Test-Path $run.log) { @(Get-Content $run.log) } else { @() }
+            $run.lines | ForEach-Object { Write-Host "  [$($run.name)] $_" }
+            Write-Output "::notice::$($run.name): exit=$($run.code)"
+            if ($run.code -notin @(0, 2)) { Write-Output "::error::$($run.name): exit $($run.code) (expected 0 or 2)"; $script:failed = $true }
+            foreach ($bad in @(' FAIL ', 'roves-host-api (error|marker missing|saves unavailable)')) {
+              $hit = $run.lines | Select-String -Pattern $bad | Select-Object -First 1
+              if ($hit) { Write-Output "::error::$($run.name): $($hit.Line)"; $script:failed = $true }
+            }
+          }
+          function Require($run, [string[]]$patterns) {
+            foreach ($pattern in $patterns) {
+              if (-not ($run.lines | Select-String -Pattern $pattern)) { Write-Output "::error::$($run.name): missing $pattern"; $script:failed = $true }
+            }
+          }
+          # Launches 1 and 2 close themselves (required log line below); the 60 s auto-close
+          # is only a backstop.
+          $first = Start-Player 'first' 60000
+          Wait-Player $first 120
+          Require $first @("host api saves dir=$([regex]::Escape((Join-Path $root 'saves')))$",
+            'page markers registered identifier=\S+ mcp=false',
+            'roves-host-api system_info os_type=windows arch=x86_64 engine=roves-cef-player cef-',
+            'roves-host-api phase=1 write=true read=hello-roves',
+            'close requested by the game command=exit')
+          if (-not (Test-Path -LiteralPath (Join-Path $root 'saves\ci-slot.save'))) { Write-Output '::error::saves\ci-slot.save missing after launch 1'; $failed = $true }
+          $second = Start-Player 'second' 60000
+          Wait-Player $second 120
+          Require $second @('roves-host-api phase=2 read=hello-roves list=ci-slot', 'close requested by the game command=exit')
+          $third = Start-Player 'third' 20000
+          $port = if (Test-Path (Join-Path $root 'origin-port')) { (Get-Content -Raw (Join-Path $root 'origin-port')).Trim() } else { '' }
+          if ($port -notmatch '^\d+$') { Write-Output "::error::origin-port '$port'"; $failed = $true }
+          else {
+            $base = "http://127.0.0.1:$port/__roves/saves/list"
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              $body = & curl.exe -s --max-time 5 -H 'X-Roves-Api: 1' $base
+              if ($LASTEXITCODE -eq 0 -and $body) { break }
+              Start-Sleep -Milliseconds 500
+            } while ((Get-Date) -lt $deadline)
+            Write-Output "::notice::host api list from the runner: $body"
+            if ($body -ne '["ci-slot","ci-stay"]') { Write-Output "::error::unexpected list answer '$body'"; $failed = $true }
+            $cases = @(
+              @{ name = 'foreign Host (DNS rebinding)'; args = @('-H', "Host: rebound.example:$port", '-H', 'X-Roves-Api: 1') },
+              @{ name = 'missing X-Roves-Api'; args = @() },
+              @{ name = 'foreign Origin'; args = @('-H', 'X-Roves-Api: 1', '-H', 'Origin: http://evil.example') },
+              @{ name = 'CORS preflight'; args = @('-X', 'OPTIONS', '-H', 'Origin: http://evil.example', '-H', 'Access-Control-Request-Method: POST', '-H', 'Access-Control-Request-Headers: x-roves-api') }
+            )
+            foreach ($case in $cases) {
+              $headers = Join-Path $out 'headers.txt'
+              $code = & curl.exe -s --max-time 5 -o NUL -D $headers -w '%{http_code}' @($case.args) $base
+              $cors = Select-String -LiteralPath $headers -Pattern '^access-control-' -Quiet
+              Write-Output "::notice::$($case.name): HTTP $code cors-headers=$cors"
+              if ($code -ne '403' -or $cors) { Write-Output "::error::$($case.name): HTTP $code cors-headers=$cors (expected 403, none)"; $failed = $true }
+            }
+          }
+          Wait-Player $third 120
+          Require $third @('roves-host-api phase=3 read=hello-roves staying')
+          if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
+          if ($failed) { exit 1 }
       # Local MCP bridge (README "Local MCP bridge"). Assembled on every run for the fixture
       # gate below, in its own temporary folder: the plain package uploaded to users is not
       # touched and keeps the bridge off. Smoked as a package and uploaded only when
@@ -1710,7 +1817,8 @@ jobs:
       # isMcpEnabled() negative cases on the same fixture with the PLAIN package's play.exe (no
       # mcp\enabled): bridge off (no --roves-mcp), and --roves-mcp while the bridge cannot
       # start (LOCALAPPDATA points at a file). Required (smoke.mjs disabled): the game loads
-      # directly (no about:blank bootstrap), the marker is absent in the entry script and in
+      # (after the about:blank bootstrap that registers the __ROVES__ host marker), the MCP
+      # marker is absent in the entry script and in
       # the child frame, no session record, no FAIL line, exit 0 after auto-close.
       - name: MCP disabled smoke on the fixture (WARP)
         if: (success() || failure()) && steps.mcp_package.outcome == 'success'
@@ -1800,6 +1908,7 @@ jobs:
             ${{ runner.temp }}/cef-vn-player-run/process-command-lines.txt
             ${{ runner.temp }}/cef-vn-player-run/startup-screen.png
             ${{ runner.temp }}/cef-vn-player-run/refused-*.stderr.txt
+            ${{ runner.temp }}/cef-host-api/*.log
             ${{ runner.temp }}/vnt-npm-ci.log
             ${{ runner.temp }}/vnt-build.log
             ${{ runner.temp }}/vnt-build-info.txt

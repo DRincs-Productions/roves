@@ -2,8 +2,8 @@
 //! game build from a per-run loopback origin instead of the deterministic fixture, and
 //! forwards SDL3 mouse, wheel and keyboard input to the off-screen browser through
 //! welding's `CefSurfaceProducer` input API. Rendering, composition (`--roves-compose`),
-//! sandbox and shutdown are the probe's unchanged path; nothing here injects script or
-//! exposes any host API to the page.
+//! sandbox and shutdown are the probe's unchanged path. The host API (`host_api`, README
+//! "Host API") is served next to the game files on the same origin.
 
 use std::path::{Path, PathBuf};
 
@@ -28,6 +28,10 @@ use crate::game_rules::{
 #[path = "../../cef-window-probe/src/server.rs"]
 pub(crate) mod server;
 pub(crate) use server::Server;
+/// The players' shared host API (`/__roves/<module>/<cmd>` on the same loopback origin;
+/// README "Host API").
+#[path = "../../cef-window-probe/src/host_api.rs"]
+pub(crate) mod host_api;
 
 /// Console lines forwarded to the evidence log before only counting them.
 const CONSOLE_LOG_CAP: u32 = 500;

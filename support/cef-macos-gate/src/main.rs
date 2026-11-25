@@ -26,6 +26,13 @@
 #[allow(dead_code)]
 #[path = "../../cef-netrender-probe/src/game_rules.rs"]
 mod game_rules;
+/// The players' shared host API (`/__roves/<module>/<cmd>` on the loopback origin; Windows
+/// player README "Host API"): `core` and `saves`. The `window.__ROVES__` page marker is not
+/// injected here (no DevTools channel in the gates), so `isAvailable()` of roves-api stays
+/// `false`; the routes answer direct calls.
+#[cfg(target_os = "macos")]
+#[path = "../../cef-window-probe/src/host_api.rs"]
+mod host_api;
 #[cfg(target_os = "macos")]
 mod player;
 #[cfg(target_os = "macos")]
@@ -215,12 +222,35 @@ mod gate {
             None => None,
         };
 
+        // Host API on the same origin (Windows player README "Host API"): saves in
+        // `<profile root>/saves` with the persistent profile, unavailable when isolated;
+        // `exit`/`clear_content_cache` end the drive loop like a window close.
+        let game_exit = std::sync::Arc::new(std::sync::OnceLock::<&'static str>::new());
+        let saves_dir = profile
+            .as_ref()
+            .map(|p| p.root.join(crate::game_rules::PLAYER_SAVES_DIR));
+        let start_game_server = |dir: &std::path::Path, port: u16| {
+            let exit = game_exit.clone();
+            let (api, saves) = crate::host_api::HostApi::new(crate::host_api::HostConfig {
+                saves_dir: saves_dir.clone(),
+                engine_version: format!("roves-cef-player cef-{}", cef_version()),
+                request_exit: std::sync::Arc::new(move |cmd| {
+                    let _ = exit.set(cmd);
+                }),
+            });
+            match saves {
+                Ok(dir) => println!("gate: host api saves dir={}", dir.display()),
+                Err(reason) => println!("gate: host api saves unavailable reason={reason}"),
+            }
+            crate::server::start_with(dir, port, |origin| api.router(origin))
+        };
+
         // Packaged game: the loopback origin must be known before the browser is created,
         // and it outlives CEF so in-flight responses finish (Windows player order).
         let server = match game.as_deref() {
             Some(dir) => {
                 let port = profile.as_ref().and_then(|p| p.stored_port).unwrap_or(0);
-                let server = match crate::server::start(dir, port) {
+                let server = match start_game_server(dir, port) {
                     Ok(server) => server,
                     // The stored port is the saves' origin: another port would silently show
                     // an empty game, so a taken port ends the run.
@@ -337,6 +367,7 @@ mod gate {
                                 &server.origin,
                                 &cache.join(crate::profile::GAME_PROFILE_DIR),
                                 timeout,
+                                &game_exit,
                             )
                         },
                         None => drive_fixture(&runtime, &window, &mut events, &gpu, timeout),
@@ -373,6 +404,12 @@ mod gate {
         }
         println!("gate: shutdown complete exit={code}");
         Ok(code)
+    }
+
+    /// The CEF build the bindings were generated for (as in the Windows player).
+    fn cef_version() -> String {
+        std::ffi::CStr::from_bytes_with_nul(cef::sys::CEF_VERSION)
+            .map_or_else(|_| "unknown".into(), |v| v.to_string_lossy().into_owned())
     }
 
     /// Stops the loopback server after CEF shut down. `false` when stopping failed.

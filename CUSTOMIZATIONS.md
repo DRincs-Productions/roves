@@ -1,13 +1,35 @@
-## 2026-11-25 - CEF loopback server: refuse a live listener on the stored port (macOS)
+## 2026-11-25 - CEF players: roves-api host API on the loopback origin (core + saves)
+
+Added: `support/cef-window-probe/src/host_api.rs`, `support/cef-netrender-probe/src/page_init.rs`,
+`support/cef-netrender-probe/host-api-fixture/`, `support/cef-host-api-tests/` (CEF-free test
+crate). Changed: `support/cef-window-probe/src/server.rs` (`start_with` mounts extra routes
+before the game files), the Windows player (`app.rs`, `game.rs`, `game_rules.rs`, `lib.rs`,
+`mcp.rs`, `mcp_rules.rs`, `Cargo.toml/lock`, `mcp/smoke.mjs`, `mcp/fixture/entry.js`, README
+"Host API"), both gates (`main.rs`, `player.rs`, `Cargo.toml/lock`) and the three CEF
+workflows. The CEF players served none of the Servo shell's `roves:`/`saves:` schemes, and
+welding owns `CefApp`, so schemes would need a fork. Games now reach the host at
+`/__roves/<module>/<cmd>` on their own origin: `core` (`system_info`, `exit`,
+`clear_content_cache`, which closes the game since no extraction cache exists) and `saves`
+(Servo commands and JSON, files in `<profile root>/saves`, unavailable without a persistent
+profile). Guard modelled on Chromium's DevTools HTTP handler: exact `Host`, required
+`X-Roves-Api: 1`, preflights refused, no CORS headers, foreign `Origin`/`Sec-Fetch-Site`
+refused, `no-store`. Atomic writes use `tempfile` (new in the graph with `fastrand`); query
+parsing `form_urlencoded`, both maintained crates. Windows: `window.__ROVES__` (frozen
+`{transport: "http", api: "/__roves/"}`) is now registered in every game-mode launch through
+the CDP document-start path that previously ran only with the MCP bridge, so every launch
+starts on `about:blank` first; log lines renamed to `page markers ...`. The gates serve the
+routes and close on `exit`, but have no DevTools channel, so no page marker there yet.
+
+## 2026-11-25 - CEF loopback server: refuse a live listener on the stored port
 
 Changed: `support/cef-window-probe/src/server.rs` (shared by the Windows player and the macOS
 and Linux gates through `#[path]`). CI run 45623549062 showed the macOS player binding the
 stored origin port while a `SO_REUSEADDR` listener already held it: Darwin accepts the
 duplicate bind when both sockets set the option (Rust's std always does on Unix, to rebind
-past TIME_WAIT), so the game could share its saves' origin with another app. On macOS a fixed
-port is now first probed with a 250 ms loopback connect; an answer is reported as `AddrInUse`
-(exit 6, "port busy"), TIME_WAIT leftovers do not answer and still rebind. Linux and Windows
-already refuse the duplicate bind and are unchanged.
+past TIME_WAIT), so the game could share its saves' origin with another app. A fixed port is now
+first probed with a 250 ms loopback connect; an answer is reported as `AddrInUse`
+(exit 6, "port busy"), TIME_WAIT leftovers do not answer and still rebind. Linux accepted
+the duplicate bind as well (CI run 45645159198), so the probe now runs on every platform.
 
 ## 2026-11-25 - CEF + SDL3 + wgpu candidate: Linux packaged-game slice (experiment only)
 

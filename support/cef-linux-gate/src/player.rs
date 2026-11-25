@@ -21,8 +21,9 @@
 //! producer accepts `user_data_dir` in `new` (it pumps the context initialisation itself),
 //! as on Windows; the macOS two-step preparation is not needed.
 //!
-//! Nothing is injected into the page, no host API is exposed, no DevTools endpoint or
-//! remote-debugging port is opened, and no input is forwarded yet (later slice).
+//! Nothing is injected into the page and no DevTools endpoint or remote-debugging port is
+//! opened. The host API routes (`host_api.rs`, `core` + `saves`) are served on the loopback
+//! origin; their `exit` ends this loop like a window close, and no input is forwarded yet (later slice).
 //!
 //! Test-only environment (CI): `ROVES_GATE_AUTO_CLOSE_MS` pushes one SDL quit event that long
 //! after the first game frame (DMA-BUF device) or after the accepted load-end (no DMA-BUF
@@ -101,6 +102,7 @@ pub(crate) fn drive(
     origin: &str,
     profile_dir: &Path,
     timeout: Duration,
+    game_exit: &std::sync::OnceLock<&'static str>,
 ) -> Result<(i32, LinuxCefProducer), String> {
     let auto_close = env_u64("ROVES_GATE_AUTO_CLOSE_MS").map(Duration::from_millis);
     let dump = std::env::var_os("ROVES_GATE_FRAME_DUMP").map(PathBuf::from);
@@ -160,6 +162,13 @@ pub(crate) fn drive(
                 } => close_source = close_source.or(Some("window-close")),
                 _ => {},
             }
+        }
+        // Host API `exit`/`clear_content_cache` (server thread): the same close path.
+        if close_source.is_none()
+            && let Some(cmd) = game_exit.get()
+        {
+            println!("gate: close requested by the game command={cmd}");
+            close_source = Some("game-exit");
         }
         runtime.do_message_loop_work();
         while let Some(event) = producer.poll_web_event() {

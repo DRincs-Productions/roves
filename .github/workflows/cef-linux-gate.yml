@@ -27,6 +27,7 @@ on:
       - 'support/cef-linux-gate/**'
       # Compiled into the gate through `#[path]` (packaged-game mode).
       - 'support/cef-window-probe/src/server.rs'
+      - 'support/cef-window-probe/src/host_api.rs'
       # The Windows player's pure rules (origin, load status, profile name/files), `#[path]`.
       - 'support/cef-netrender-probe/src/game_rules.rs'
       # The macOS gate's profile glue (lock, stored origin port), `#[path]`.

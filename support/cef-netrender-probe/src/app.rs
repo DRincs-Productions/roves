@@ -16,11 +16,12 @@ use crate::game::{Console, GameOptions, Input, Server};
 use crate::game_rules::{
     ClickAction, ClickInput, ClickTest, CycleAction, KeyAction, KeyInput, KeyTest, Milestone,
     MinimizeCycle, PLAYER_CEF_DIR, PLAYER_GAME_DIR, PLAYER_LOCK_FILE, PLAYER_ORIGIN_PORT_FILE,
-    Startup, StartupFailure, StartupGate, Suspension, TEST_CLICK_MOUSE_ID, TEST_CLICK_POINT,
-    TEST_KEY_KEYBOARD_ID, TEST_MINIMIZE_HOLD, TEST_WHEEL_LINES, TEST_WHEEL_MOUSE_ID, TestKey,
-    WheelAction, WheelInput, WheelMarker, WheelTest, is_click_marker, key_marker, load_status_ok,
-    on_origin, origin_port, parse_origin_port, parse_test_key_delay, parse_test_wheel_delay,
-    player_profile_name, splash_indicator, splash_layout, suspension_change, wheel_marker,
+    PLAYER_SAVES_DIR, Startup, StartupFailure, StartupGate, Suspension, TEST_CLICK_MOUSE_ID,
+    TEST_CLICK_POINT, TEST_KEY_KEYBOARD_ID, TEST_MINIMIZE_HOLD, TEST_WHEEL_LINES,
+    TEST_WHEEL_MOUSE_ID, TestKey, WheelAction, WheelInput, WheelMarker, WheelTest, is_click_marker,
+    key_marker, load_status_ok, on_origin, origin_port, parse_origin_port, parse_test_key_delay,
+    parse_test_wheel_delay, player_profile_name, splash_indicator, splash_layout,
+    suspension_change, wheel_marker,
 };
 use crate::mcp::Call;
 use crate::mcp_rules::{McpKey, point_in_window};
@@ -210,9 +211,12 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     };
     startup_line(&log, &mut startup, Milestone::OptionsLogReady);
 
-    // Game mode: bind the loopback origin before CEF starts (the window probe's order).
+    // Game mode: bind the loopback origin before CEF starts (the window probe's order). The
+    // host API (README "Host API") is served on the same origin; its `exit` reaches the main
+    // loop through `game_exit`.
+    let game_exit = Arc::new(OnceLock::<&'static str>::new());
     let server = match options.game.as_ref() {
-        Some(game) => match crate::game::server::start(&game.dir, game.port) {
+        Some(game) => match start_game_server(&log, &options, game, &game_exit) {
             Ok(server) => {
                 log.line(format_args!(
                     "game loopback origin={} game-dir={} profile-dir={} browser_pid={}",
@@ -365,6 +369,8 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         startup,
         mcp: None,
         bootstrap: None,
+        page_init: None,
+        game_exit,
     };
     probe.start_mcp();
     match probe.start(&video) {
@@ -394,7 +400,9 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
                 } else {
                     probe.redraw(&mouse);
                 }
+                probe.devtools_step();
                 probe.mcp_step();
+                probe.game_exit_step();
                 probe.report_startup_failure();
             }
         },
@@ -435,6 +443,39 @@ fn startup_line(log: &Log, startup: &mut Startup, milestone: Milestone) {
             milestone.name()
         ));
     }
+}
+
+/// Starts the game's loopback server with the host API routes (README "Host API"): saves in
+/// `<profile root>\saves` with a persistent profile, unavailable otherwise; `exit` and
+/// `clear_content_cache` set `game_exit`.
+fn start_game_server(
+    log: &Log,
+    options: &Options,
+    game: &GameOptions,
+    game_exit: &Arc<OnceLock<&'static str>>,
+) -> std::io::Result<Server> {
+    use crate::game::host_api::{HostApi, HostConfig};
+    let exit = game_exit.clone();
+    let (api, saves) = HostApi::new(HostConfig {
+        saves_dir: options
+            .player_profile
+            .as_ref()
+            .map(|root| root.join(PLAYER_SAVES_DIR)),
+        engine_version: format!("roves-cef-player cef-{}", cef_version()),
+        request_exit: Arc::new(move |cmd| {
+            let _ = exit.set(cmd);
+        }),
+    });
+    match saves {
+        Ok(dir) => log.line(format_args!("host api saves dir={}", dir.display())),
+        Err(reason) => log.line(format_args!("host api saves unavailable reason={reason}")),
+    }
+    crate::game::server::start_with(&game.dir, game.port, |origin| api.router(origin))
+}
+
+/// The page marker script for the game origin (`None` in fixture mode).
+fn game_origin_script(server: Option<&Server>, mcp: bool) -> Option<String> {
+    crate::mcp_rules::page_marker_script(&server?.origin, mcp)
 }
 
 /// Stops the game's loopback server, after CEF shut down (in-flight responses finish first).
@@ -1059,12 +1100,18 @@ struct Probe {
     /// Game mode with `Options::mcp` only: the local MCP bridge, dropped (session record
     /// removed) when the run starts closing.
     mcp: Option<crate::mcp::Bridge>,
-    /// Game mode with a running MCP bridge only: the browser starts on `about:blank` until
-    /// the page capability registration settled (`crate::mcp` module docs).
+    /// Game mode: the browser starts on `about:blank` until the page marker registration
+    /// settled (`crate::page_init` module docs).
     bootstrap: Option<Bootstrap>,
+    /// Game mode: registration of the `__ROVES__` (and, with the bridge, `__ROVES_MCP__`)
+    /// page markers through welding's DevTools channel.
+    page_init: Option<crate::page_init::PageInit>,
+    /// Set by the host API's `exit`/`clear_content_cache` (server thread); the main loop then
+    /// closes through the same path as an OS close request.
+    game_exit: Arc<OnceLock<&'static str>>,
 }
 
-/// The `about:blank` document that precedes the game while the MCP page capability script is
+/// The `about:blank` document that precedes the game while the page marker script is
 /// registered. Its navigation events are not the game's and are skipped; once the game
 /// committed on its origin, `about:blank` is an off-origin navigation again.
 struct Bootstrap {
@@ -1395,15 +1442,18 @@ impl Probe {
                 base64::engine::general_purpose::STANDARD.encode(FIXTURE_HTML)
             ),
         };
-        // MCP bridge running: the game URL waits for the page capability registration.
-        let url = if game && self.mcp.is_some() {
-            self.bootstrap = Some(Bootstrap {
-                game_url: Some(url),
-                game_committed: false,
-            });
-            crate::mcp_rules::BOOTSTRAP_URL.to_owned()
-        } else {
-            url
+        // Game mode: the game URL waits for the page marker registration (`__ROVES__`, plus
+        // `__ROVES_MCP__` while the bridge runs).
+        let url = match game_origin_script(self.server.as_ref(), self.mcp.is_some()) {
+            Some(script) if game => {
+                self.page_init = Some(crate::page_init::PageInit::new(script));
+                self.bootstrap = Some(Bootstrap {
+                    game_url: Some(url),
+                    game_committed: false,
+                });
+                crate::mcp_rules::BOOTSTRAP_URL.to_owned()
+            },
+            _ => url,
         };
         let producer = WindowsCefProducer::new(
             &runtime,
@@ -1419,9 +1469,9 @@ impl Probe {
                     // Game: a per-producer on-disk profile inside the run's root cache. The
                     // fixture keeps welding's isolated in-memory profile, unchanged.
                     user_data_dir: game.then(|| crate::game::profile_dir(&self.options.cache_dir)),
-                    // Local MCP bridge only: welding's in-process DevTools channel
-                    // (`SendDevToolsMessage` + a message observer; no port, no domain enabled).
-                    devtools_protocol: game && self.mcp.is_some(),
+                    // Game mode: welding's in-process DevTools channel (`SendDevToolsMessage` +
+                    // a message observer; no port), for the page markers and the MCP bridge.
+                    devtools_protocol: self.page_init.is_some(),
                     ..Default::default()
                 },
             },
@@ -2211,7 +2261,7 @@ impl Probe {
                     && boot.skips(&event, origin, self.game_loaded_at.is_some())
                 {
                     self.log
-                        .line(format_args!("mcp bootstrap event skipped {event:?}"));
+                        .line(format_args!("page bootstrap event skipped {event:?}"));
                     continue;
                 }
                 match &event {
@@ -2921,39 +2971,68 @@ impl Probe {
         }
     }
 
-    /// One loop turn of the MCP bridge: DevTools replies, then a few queued requests.
-    fn mcp_step(&mut self) {
-        let Some(bridge) = self.mcp.as_mut() else {
+    /// One loop turn of welding's DevTools queue (bounded, so it is drained every turn while
+    /// the channel is on): page marker replies, then the bridge's; once the marker
+    /// registration settled (registered or not), the game URL is loaded.
+    fn devtools_step(&mut self) {
+        let (Some(s), Some(init)) = (self.state.as_mut(), self.page_init.as_mut()) else {
             return;
         };
-        if let Some(s) = self.state.as_mut() {
-            bridge.poll_devtools(&mut s.producer);
-            // Bootstrap only: once the capability registration settled (registered or not),
-            // the game URL is loaded.
-            if let Some(boot) = self.bootstrap.as_mut()
-                && boot.game_url.is_some()
-                && let Some(outcome) = bridge.capability_step(&mut s.producer)
-            {
-                let url = boot.game_url.take().unwrap_or_default();
-                match outcome {
-                    Ok(identifier) => self.log.line(format_args!(
-                        "mcp page capability registered identifier={identifier}"
-                    )),
-                    Err(error) => self.log.line(format_args!(
-                        "mcp page capability unavailable error={error}"
-                    )),
-                }
-                match s.producer.navigate_to_url(&url) {
-                    Ok(()) => self.log.line(format_args!("game navigation url={url}")),
-                    Err(error) => {
-                        self.log
-                            .line(format_args!("FAIL game navigation url={url} error={error}"));
-                        self.failures += 1;
-                        self.fail_startup(StartupFailure::LoadError);
-                    },
-                }
+        while let Some(message) = s.producer.poll_devtools_message() {
+            let Ok(message) = serde_json::from_str::<Value>(&message) else {
+                continue;
+            };
+            if init.handle(&message) {
+                continue;
+            }
+            if let Some(bridge) = self.mcp.as_mut() {
+                bridge.devtools_message(&mut s.producer, &message);
             }
         }
+        if let Some(bridge) = self.mcp.as_mut() {
+            bridge.expire(&mut s.producer);
+        }
+        if let Some(boot) = self.bootstrap.as_mut()
+            && boot.game_url.is_some()
+            && let Some(outcome) = init.step(&mut s.producer)
+        {
+            let url = boot.game_url.take().unwrap_or_default();
+            let mcp = self.mcp.is_some();
+            match outcome {
+                Ok(identifier) => self.log.line(format_args!(
+                    "page markers registered identifier={identifier} mcp={mcp}"
+                )),
+                Err(error) => self.log.line(format_args!(
+                    "page markers unavailable mcp={mcp} error={error}"
+                )),
+            }
+            match s.producer.navigate_to_url(&url) {
+                Ok(()) => self.log.line(format_args!("game navigation url={url}")),
+                Err(error) => {
+                    self.log
+                        .line(format_args!("FAIL game navigation url={url} error={error}"));
+                    self.failures += 1;
+                    self.fail_startup(StartupFailure::LoadError);
+                },
+            }
+        }
+    }
+
+    /// The host API asked to close (`exit`, `clear_content_cache`): the OS close path.
+    fn game_exit_step(&mut self) {
+        let Some(cmd) = self.game_exit.get() else {
+            return;
+        };
+        if self.phase == Phase::Closing || self.state.is_none() {
+            return;
+        }
+        self.log
+            .line(format_args!("close requested by the game command={cmd}"));
+        self.close();
+    }
+
+    /// One loop turn of the MCP bridge: a few queued requests.
+    fn mcp_step(&mut self) {
         let Some(bridge) = self.mcp.as_mut() else {
             return;
         };
@@ -2961,7 +3040,12 @@ impl Probe {
             let method = call.method();
             let result = match call {
                 Call::State => Ok(self.mcp_state()),
-                Call::Evaluate(_) if self.mcp.as_ref().is_some_and(|m| m.capability_pending()) => {
+                Call::Evaluate(_)
+                    if self
+                        .bootstrap
+                        .as_ref()
+                        .is_some_and(|b| b.game_url.is_some()) =>
+                {
                     Err("the game page is not loaded yet".to_owned())
                 },
                 Call::Evaluate(expression) => {
@@ -3008,7 +3092,7 @@ impl Probe {
             "loaded": self.game_loaded_at.is_some(),
             // `isMcpEnabled()` marker: "pending" until registered, then whether the game
             // document received it.
-            "page_capability": match mcp.and_then(|m| m.page_capability) {
+            "page_capability": match self.page_init.as_ref().and_then(|p| p.registered) {
                 None => "pending",
                 Some(true) => "registered",
                 Some(false) => "unavailable",

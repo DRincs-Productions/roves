@@ -857,10 +857,11 @@ pub(crate) const PLAYER_GAME_DIR: &str = "game";
 /// profile root. The lock is held for the whole browser-process run (one instance per
 /// profile); the origin port file keeps the loopback origin, and so the origin-keyed page
 /// storage, identical across launches; CEF's root cache (with welding's `game-profile`) is
-/// the `cef` subdirectory.
+/// the `cef` subdirectory; the host API's save files (README "Host API") are in `saves`.
 pub(crate) const PLAYER_LOCK_FILE: &str = "player.lock";
 pub(crate) const PLAYER_ORIGIN_PORT_FILE: &str = "origin-port";
 pub(crate) const PLAYER_CEF_DIR: &str = "cef";
+pub(crate) const PLAYER_SAVES_DIR: &str = "saves";
 
 /// Name of the default persistent profile directory (under `%LOCALAPPDATA%\Roves\Player`):
 /// the executable stem (ASCII letters, digits, `-` and `_` kept, other characters replaced by
