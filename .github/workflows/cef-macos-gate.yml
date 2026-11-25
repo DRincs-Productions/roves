@@ -472,20 +472,24 @@ jobs:
           ordered marker "${src}roves-ci-marker available=true\"$" \
             "${src}roves-ci-save os_type=macos available=true write=true read=hello-roves\"$"
           ordered title '^gate: title "roves ci player fixture"$'
+          # The page's console line and the player's marker travel on different CEF IPC paths
+          # (OnConsoleMessage vs. the page-marker channel), so each is ordered only after the
+          # forwarded event, not against the other.
+          up_click='^gate: test click forwarded event=up ok=true$'
           ordered click '^gate: test click requested x=100 y=60 pushed=true$' '^gate: test click forwarded event=down ok=true$' \
-            '^gate: test click forwarded event=up ok=true$' \
-            "${src}roves-test-click-received target=click-target trusted=true button=0 detail=1 " \
-            '^gate: test click marker received$' '^gate: test click complete$'
+            "$up_click" '^gate: test click marker received$' '^gate: test click complete$'
+          ordered click-page "$up_click" "${src}roves-test-click-received target=click-target trusted=true button=0 detail=1 "
           ordered key '^gate: test key requested key=Right pushed=true$' \
             '^gate: test key forwarded event=down ok=true raw=0x0000 usage=0x4F windows_key_code=0x27 native_key_code=0x007C$' \
             '^gate: test key forwarded event=up ok=true ' \
+            '^gate: test key marker received kind=Down$' '^gate: test key marker received kind=Up$' '^gate: test key complete$'
+          ordered key-page '^gate: test key forwarded event=down ok=true ' \
             "${src}roves-test-key-received type=keydown key=ArrowRight code=ArrowRight keyCode=39 repeat=false trusted=true " \
-            '^gate: test key marker received kind=Down$' \
-            "${src}roves-test-key-received type=keyup key=ArrowRight code=ArrowRight keyCode=39 repeat=false trusted=true " \
-            '^gate: test key marker received kind=Up$' '^gate: test key complete$'
+            "${src}roves-test-key-received type=keyup key=ArrowRight code=ArrowRight keyCode=39 repeat=false trusted=true "
           ordered wheel '^gate: test wheel requested pushed=true$' '^gate: test wheel forwarded ok=true delta=Some\(\(0, 120\)\)$' \
-            "${src}roves-test-wheel-received type=wheel deltaX=0 deltaY=-[0-9.e+-]+ deltaZ=0 deltaMode=[012] trusted=true " \
             '^gate: test wheel complete$'
+          ordered wheel-page '^gate: test wheel forwarded ok=true ' \
+            "${src}roves-test-wheel-received type=wheel deltaX=0 deltaY=-[0-9.e+-]+ deltaZ=0 deltaMode=[012] trusted=true "
           ordered end '^gate: game input forwarded=[1-9][0-9]* rejected=0 ' '^gate: PASS test input click, key and wheel delivered$' \
             '^gate: browser closed elapsed_ms=' '^gate: cef shutdown complete$' "^gate: exit code=$code$"
           count 'roves-test-key-received type=keypress' 0
