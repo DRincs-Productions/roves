@@ -1,3 +1,40 @@
+## 2026-11-25 - CEF loopback server: refuse a live listener on the stored port (macOS)
+
+Changed: `support/cef-window-probe/src/server.rs` (shared by the Windows player and the macOS
+and Linux gates through `#[path]`). CI run 45623549062 showed the macOS player binding the
+stored origin port while a `SO_REUSEADDR` listener already held it: Darwin accepts the
+duplicate bind when both sockets set the option (Rust's std always does on Unix, to rebind
+past TIME_WAIT), so the game could share its saves' origin with another app. On macOS a fixed
+port is now first probed with a 250 ms loopback connect; an answer is reported as `AddrInUse`
+(exit 6, "port busy"), TIME_WAIT leftovers do not answer and still rebind. Linux and Windows
+already refuse the duplicate bind and are unchanged.
+
+## 2026-11-25 - CEF + SDL3 + wgpu candidate: Linux packaged-game slice (experiment only)
+
+Changed: `support/cef-linux-gate/{Cargo.toml,Cargo.lock,README.md,src/main.rs}`, added
+`support/cef-linux-gate/src/player.rs`, `.github/workflows/cef-linux-gate.yml`. After the
+sandboxed fixture gate went green (CI run 45618535853, exit 3 on lavapipe under both layer-1
+variants), the Linux gate gets the macOS player's packaged-game mode: `game/index.html` next
+to the executable switches from the `data:` fixture to an unmodified static game served by the
+shared loopback server (`support/cef-window-probe/src/server.rs`), with the Windows player's
+`game_rules.rs` (origin, load status, profile name, port parsing) and the macOS gate's
+`profile.rs` (`flock` lock, stored origin port) compiled unchanged through `#[path]`; axum,
+tower-http, tokio and tower added at the macOS gate's versions (lockfile otherwise unchanged).
+Checks: accepted load-end on the origin, no main frame off it, first imported frame after
+load-end and a multi-colour last frame when a DMA-BUF import device exists (exit 0, PASS with
+`evidence=gpu|software-adapter`); on a CPU Vulkan adapter frames are only counted and the run
+ends with exit 3 `NO_DMABUF_DEVICE ... game graphics NOT verified` (no PASS, no readback).
+Persistent profile at `$XDG_CONFIG_HOME` (absolute) or `~/.config` + `/Roves/Player/<name>`
+(Chromium's Linux user-data parent, `chrome_paths_linux.cc`), exit 6 on a busy profile or port,
+exit 1 on a damaged port file, `--roves-isolated-profile` for a per-run cache. Shared Linux
+refactor: one `Gpu` (adapter, import device, surface, blitter) and loop pacer for both modes;
+the close now waits for welding's `OnBeforeClose` record (10 s limit, as on macOS) instead of a
+fixed 1.5 s pump, in the fixture gate too; every run ends with `gate: exit code=<N>`. CI: the
+pinned `visual-novel-template` build packaged into `game/`, one isolated run (exit must equal
+the setuid fixture's) and two persistent launches plus lock/port/damaged-file refusals, X11 and
+sandbox (setuid layer 1) kept. No input, no Steam; Windows/macOS code and workflows unchanged;
+not user-facing; no `mach` surface change.
+
 ## 2026-11-25 - CEF Linux gate: renderer identity from Chromium's process title, paced loop
 
 Changed: `support/cef-linux-gate/{src/main.rs,README.md}`. CI run 45612105775 (setuid, X11)

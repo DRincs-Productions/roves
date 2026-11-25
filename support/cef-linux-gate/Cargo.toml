@@ -50,3 +50,11 @@ sdl3 = { version = "0.20", default-features = false, features = ["raw-window-han
 pollster = "0.4"
 dpi = "0.1"
 log = "0.4"
+# Packaged-game mode only (src/player.rs): the stage-1 window probe's loopback server
+# (support/cef-window-probe/src/server.rs, compiled through `#[path]` exactly as the Windows
+# player and the macOS gate do) with their versions: axum + tower-http ServeDir (MIT) own path
+# normalisation, MIME types and Range requests on 127.0.0.1; tokio runs it on its own thread.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+tower-http = { version = "0.7.1", default-features = false, features = ["fs"] }
+tokio = { version = "1.47", default-features = false, features = ["rt", "net", "sync"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }

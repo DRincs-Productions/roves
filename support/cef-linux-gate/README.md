@@ -1,9 +1,12 @@
 # CEF accelerated OSR -> wgpu-weld -> wgpu + SDL3: Linux feasibility gate
 
-Status (2026-11-25): **implemented, type-checked locally for `x86_64-unknown-linux-gnu`;
-never compiled with CEF/SDL, never run.** Its CI (`.github/workflows/cef-linux-gate.yml`)
-has no result yet. Nothing here claims that the Linux path works, and no future CI result
-from a hosted runner can claim it works on a GPU (see "GPU evidence versus CI").
+Status (2026-11-25): **fixture gate green in CI run 45618535853** (commit `292f1bee5c2`,
+`ubuntu-24.04`, Xvfb, Mesa lavapipe): exit 3 under both layer-1 variants (setuid and user
+namespace), i.e. build, flat layout, sandboxed renderers, SDL3 X11 + Vulkan presentation and
+shutdown verified, **no DMA-BUF import device, so no CEF frame was imported or shown**.
+**Packaged-game slice (below): implemented, type-checked locally only, not yet in CI.**
+Nothing here claims that the Linux path shows CEF frames, and no CI result from a hosted
+runner can claim it works on a GPU (see "GPU evidence versus CI").
 
 Linux twin of `support/cef-macos-gate`, for the CEF + SDL3 + wgpu player
 (`support/cef-netrender-probe`, Windows only). Same question with the same maintained
@@ -65,6 +68,12 @@ wgpu 29.0.4 for the gate, welding and grafting; wgpu 30.0.2 only under `cef`
   under Xvfb + lavapipe (CI run 45612105775 presented ~2450 times per second), so the drive
   loop is also paced to one iteration per 16 ms; `gate: loop end` reports `present_rate_hz`.
 - **Order**: CEF initialises first, then SDL3 (same as the macOS gate).
+- **Close**: `close()` (`CloseBrowser(force)`), then CEF is pumped until welding's literal
+  debug record `CEF on_before_close` (`linux_cef/cef_backed.rs`, the only close-completion
+  signal of the pinned Linux producer) reaches the gate's logger, at most 10 s, before
+  `cef::shutdown`; a close that does not complete fails the run (`gate: browser closed
+  elapsed_ms=` / `FAIL browser not closed`). Same procedure as the macOS gate; it replaced the
+  fixed 1.5 s pump of the first version.
 
 ## Chromium reference (pinned `f2700724f59f`, sparse paths added for this gate)
 
@@ -109,6 +118,26 @@ wgpu 29.0.4 for the gate, welding and grafting; wgpu 30.0.2 only under `cef`
 - `components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc:86-97`:
   the ARGB capture format may yield RGBA or BGRA depending on platform, hence the gate
   accepts both `Rgba8UnormSrgb` and `Bgra8UnormSrgb` and compares in the frame's order.
+
+Packaged game and profile (added with the packaged-game slice, same pinned revision):
+
+- `content/public/browser/web_contents_observer.h` (`DidFinishLoad`,
+  `DidFirstVisuallyNonEmptyPaint`), as used by the macOS and Windows players: the main frame's
+  load-end is the load criterion; with an import device, the first accelerated frame after it
+  is the OSR counterpart of the first visually non-empty paint.
+- `chrome/common/chrome_paths_linux.cc:62-100` (`GetDefaultUserDataDirectory`) and
+  `base/nix/xdg_util.cc:78-89` (`GetXDGDirectory`): Chromium's Linux profile lives in
+  `$CHROME_CONFIG_HOME`, else `$XDG_CONFIG_HOME`, else `~/.config`, under a product name. The
+  player uses the same parent (`$XDG_CONFIG_HOME` or `~/.config`) with `Roves/Player/<name>`;
+  differences: it ignores a relative `XDG_CONFIG_HOME` (XDG Base Directory rule; Chromium takes
+  any non-empty value), does not read `CHROME_CONFIG_HOME`, and names the profile per install.
+- `chrome/browser/process_singleton_posix.cc:12-30, 339-500`: Chromium's Linux singleton is a
+  `SingletonLock` symlink to `<hostname>-<pid>` plus a socket that forwards the command line to
+  the running instance; only the macOS build takes an `flock(2)` (`ReplaceOldSingletonLock`).
+  The player keeps the Windows/macOS rule instead: an `flock` on `player.lock` (std
+  `File::try_lock`), released by the kernel when the process dies, and a second launch exits
+  with code 6 instead of forwarding anything. Trade-off: no stale-lock handling is needed, but
+  `flock` on some network file systems is local-only (see "Open risks").
 
 Difference from Chromium: Chromium composites and presents in its own GPU process; here the
 frame leaves Chromium as DMA-BUF planes and the host imports and presents it with wgpu, as
@@ -155,16 +184,69 @@ enforces that expectation by setting `kernel.apparmor_restrict_unprivileged_user
 `chrome-sandbox`, and the dynamic loader drops `LD_LIBRARY_PATH` for set-user-ID programs,
 so libcef must resolve through the gate's own run path (CI checks `readelf`/`ldd`).
 
+## Packaged game
+
+When `game/index.html` exists next to the executable, the gate runs an unmodified static game
+build instead of the fixture (`src/player.rs`), the Linux counterpart of the macOS player:
+
+- `game/` is served by the shared loopback server (`support/cef-window-probe/src/server.rs`,
+  compiled through `#[path]` as on Windows and macOS: axum + tower-http `ServeDir` on
+  `127.0.0.1`, `Cache-Control: no-cache`, per-instance ETags) and opened at `<origin>/` in the
+  same sandboxed accelerated OSR path, X11 only, window 1280x720.
+- The origin, load-status and profile-name rules are the Windows player's
+  `support/cef-netrender-probe/src/game_rules.rs`; the profile lock and stored-port glue is
+  the macOS gate's `src/profile.rs`; both compiled unchanged through `#[path]`.
+- Checked: load-end on the loopback origin with status 2xx/304, no main frame off the origin
+  (welding has no pre-navigation veto, so it fails the run), no load error, no content
+  process death, sandboxed renderers, the close path (SDL quit or window close request ->
+  `close()` -> `OnBeforeClose` -> `cef::shutdown` -> server stop), no leftover processes.
+- **With a DMA-BUF import device**: the first frame imported after the load-end
+  (`gate: first game frame after load-end`; a `WasResized` at load-end asks a static page to
+  paint again) and a last frame with more than one colour; `ROVES_GATE_FRAME_DUMP=<file.bmp>`
+  writes it. Exit 0, `gate: PASS packaged game ... evidence=gpu|software-adapter`.
+- **Without one** (CPU Vulkan adapter, the hosted runner): CEF's frames are only counted
+  (`delivered_after_load=`) and dropped, the window stays black, and the run ends with **exit 3
+  `NO_DMABUF_DEVICE ... game graphics NOT verified`**. There is no PASS line, no frame
+  readback and no BMP in that case; CI fails if one appears.
+- Console messages are logged (first 200, 300 characters each) and counted by level; popups
+  are refused by welding and reported. Nothing is injected, no host API is exposed, no
+  DevTools endpoint is opened, **no input is forwarded and no Steam code exists** (later
+  slices).
+- Test-only: `ROVES_GATE_AUTO_CLOSE_MS` pushes one SDL quit event that long after the first
+  imported game frame, or after the accepted load-end when there is no import device (where
+  no frame can ever be shown), so CI exercises the ordinary close path.
+
+## Saves and the player profile
+
+Ordinary launch (persistent, as on Windows and macOS): the root is
+`$XDG_CONFIG_HOME/Roves/Player/<name>` when `XDG_CONFIG_HOME` is absolute, otherwise
+`$HOME/.config/Roves/Player/<name>`, with `<name>` = executable stem + 64-bit FNV-1a of the
+lower-cased canonical directory of the executable (`player_profile_name`). It holds
+`player.lock` (held with `flock` for the whole browser-process run), `origin-port` (the port
+the OS chose on the first launch, written atomically and bound again on every later launch,
+so origin-keyed storage survives) and CEF's root cache `cef/` with welding's on-disk context
+`cef/game-profile` (welding's Linux producer accepts it directly in `new`). Before CEF starts:
+profile held by another instance -> exit 6; stored port taken -> exit 6; damaged
+`origin-port` -> exit 1 (never a silent new origin). `--roves-isolated-profile` uses a per-run
+cache under the temporary directory, removed at exit (CI's first packaged run).
+Limitations: moving or renaming the directory starts a new profile; the lower-casing (a
+Windows rule) makes two install paths that differ only in case share a profile.
+
 ## Verdicts
 
-The binary prints `gate:` lines on stdout and exits with:
+The binary prints `gate:` lines on stdout (the last is `gate: exit code=<N>`) and exits with:
 
 | Exit | Meaning |
 | --- | --- |
 | 0 | An imported frame's centre 64x64 block matched dodger blue (`[30,144,255]` in the frame's channel order, ±8) and every renderer was sandboxed. The PASS line carries `evidence=gpu` or `evidence=software-adapter` |
 | 2 | `NO_ACCELERATED_FRAME`: no `OnAcceleratedPaint` before `ROVES_GATE_TIMEOUT_SECS` (default 60), nothing failed, renderers sandboxed |
 | 3 | `NO_DMABUF_DEVICE`: the Vulkan adapter is a CPU implementation without the import extensions; a plain device presents instead, delivered frames are counted and dropped; nothing failed, renderers sandboxed. Never returned for a GPU adapter |
-| 1 | Any `gate: FAIL`: running as root, missing CEF files, CEF/SDL/wgpu setup, DMA-BUF device on a GPU adapter, non-Vulkan interop, `acquire_frame` (incl. `IMPLICIT_MODIFIER`) or readback error, wgpu uncaptured error, content process terminated, frames imported but none matched, nothing presented, renderer missing or unsandboxed, unidentified sandboxed subprocess |
+| 6 | Packaged game, ordinary launch, before CEF starts: profile held by another instance, or stored origin port taken |
+| 1 | Any `gate: FAIL`: running as root, missing CEF files, CEF/SDL/wgpu setup, DMA-BUF device on a GPU adapter, non-Vulkan interop, `acquire_frame` (incl. `IMPLICIT_MODIFIER`) or readback error, wgpu uncaptured error, content process terminated, frames imported but none matched, nothing presented, renderer missing or unsandboxed, unidentified sandboxed subprocess, browser not closed within 10 s; packaged game: load-end refused or missing, main frame off the origin, load error, last frame single-coloured, damaged `origin-port`, loopback stop failure |
+
+Packaged game: 0 = load-end, imported first frame after it, multi-colour last frame, close,
+sandbox; 2 = loaded but no accelerated frame with an import device; 3 = CPU adapter without
+import device: load, sandbox and close verified, **game graphics not verified**.
 
 The fixture is the macOS gate's `data:` page (blue, plus a 1 px corner element animated with
 `requestAnimationFrame` so CEF keeps painting). It proves the frame's content arrived, not
@@ -193,17 +275,50 @@ cargo/CEF cache, dependency graph check, `cargo build --locked --release --bins`
 `resources.pak`, `v8_context_snapshot.bin`, `locales/en-US.pak`, `$ORIGIN`, `ldd`), then
 `chrome-sandbox` made root 4755. Two runs under `xvfb-run` with a 150 s hard stop: setuid
 layer 1 (`apparmor_restrict_unprivileged_userns=1`) and user-namespace layer 1 (`=0`). Each
-fails on any `gate: FAIL`, a missing `cef initialized sandbox=Sandboxed ozone=x11`,
-`sdl video driver=x11`, Vulkan adapter, `mode=AcceleratedPaint`, `presented=` > 0,
-`PASS sandbox`, the expected layer-1 line or `shutdown complete exit=<code>`, an exit other
-than 0/2/3 (3 only with a `Cpu` adapter), or a gate process alive after exit. Artifacts:
-`cef-linux-gate-logs`, `cef-linux-gate-x64` (tar of the gate directory). Never gates a release.
+fails on any `gate: FAIL`, a missing `mode=fixture`, `cef initialized sandbox=Sandboxed
+ozone=x11`, `sdl video driver=x11`, Vulkan adapter, `mode=AcceleratedPaint`, `presented=` > 0,
+`PASS sandbox`, `browser closed`, `cef shutdown complete`, the expected layer-1 line or
+`shutdown complete exit=<code>`, an exit other than 0/2/3 (3 only with a `Cpu` adapter), or a
+gate process alive after exit.
+
+Packaged game (same job): `DRincs-Productions/visual-novel-template` at `e88e9ac29e73`
+(same pin and `npm ci` + `npm run build` as the Windows and macOS packages), `dist/` copied
+byte for byte into `game/` (checked with `diff -r`, SHA-256 list in the logs); the packaged
+runs use the setuid layer 1 (Ubuntu's default).
+
+1. `--roves-isolated-profile` with `ROVES_GATE_AUTO_CLOSE_MS=8000`: the exit must equal the
+   setuid fixture's (same adapter) and the lines for that exit must appear in order. Exit 3:
+   `type=Cpu`, `dmabuf device unavailable`, `producer created ... url=<origin>/
+   profile=.../game-profile`, `load-end status=200 url=<origin>/ ok=true`, `game loaded`,
+   `fresh frame requested ok=true`, `test auto-close scheduled delay_ms=8000 anchor=load-end`,
+   `pushed SDL quit`, `loop end imported=0 ... loaded=true game_frame=false close=quit`,
+   `close requested source=quit`, `PASS sandbox`, `NO_DMABUF_DEVICE packaged game ... game
+   graphics NOT verified`, `browser closed`, `cef shutdown complete`, `loopback stopped`,
+   `cache removed`, `shutdown complete exit=3`, `exit code=3`; and no frame-shown line at all.
+   Exit 0 additionally needs the first and last game frame, the BMP and the PASS line. Always:
+   no `DevTools listening`, no persistent-profile line, no cache left, loopback port closed,
+   no process left.
+2. With `XDG_CONFIG_HOME` set to a fresh directory and from an unrelated working directory:
+   two ordinary launches must create and then reuse
+   `$XDG_CONFIG_HOME/Roves/Player/roves-cef-linux-gate-<16 hex>` with the same origin and keep
+   `origin-port`, `cef/` and `cef/game-profile`; then a held `flock` and a held port each give
+   exit 6 and a damaged `origin-port` exit 1, all before `cef initialized`.
+
+Artifacts: `cef-linux-gate-logs` (fixture, player and profile logs, BMP when exit 0, template
+build info), `cef-linux-gate-x64` (tar of the gate directory, with `game/` when packaging ran).
+Never gates a release.
 
 Local checks done on Windows (light only, as required):
 `cargo check`/`cargo clippy --locked --target x86_64-unknown-linux-gnu --no-default-features --features dox --bins`
 (clean, 1.99.1, offline against the seeded lockfile), `cargo fmt --check`, YAML parse and
 `bash -n` of the run script. They type-check the Linux code paths of welding, grafting and
-wgpu Vulkan; they do not build CEF or SDL, link or run anything.
+wgpu Vulkan; they do not build CEF or SDL, link or run anything. Packaged-game slice: the same
+`cargo clippy ... --features dox --bins` (no warnings) and `cargo fmt --check`; the four new
+dependencies were resolved offline with `cargo update -w`, and every package of the lockfile
+now has the macOS gate's version; YAML parse and `bash -n` of every `run:` block and of
+`run-gate.sh`; the packaged run's ordered-pattern check executed against synthetic logs built
+from the gate's own `println!` formats (exit 3 and exit 0 pass; an exit-3 log with a PASS line
+fails).
 
 ## Running elsewhere
 
@@ -229,12 +344,21 @@ Xwayland (`DISPLAY` set). Never as root.
 - **DMA-BUF synchronisation**: zero-copy import with `Foreign` queue ownership and no
   explicit fence from CEF; possible tearing or stale content under load, not detectable by
   this gate.
-- **Shutdown**: welding's Linux producer has no close-completion signal, so the gate pumps
-  CEF for 1.5 s after `close()` before `cef::shutdown`.
+- **Shutdown**: welding's Linux producer has no public close-completion signal; the gate
+  relies on its literal debug record `CEF on_before_close` (pinned revision). A welding update
+  that rewords it fails every run with `browser not closed`, never silently.
+- **Packaged game on a GPU**: not run anywhere; on the hosted runner the game's frames are
+  never imported. A real desktop run (and a look at `player-last-frame.bmp`) is still needed.
+- **Profile lock on network home directories**: `flock` on NFS/CIFS may be local to the
+  client, so two machines sharing one home could both acquire it. Not handled.
 - **`--password-store=basic`**: unattended choice for the gate (no Secret Service/KWallet
   wait); the player needs a deliberate one before distribution.
 - **SDL3 and CEF on one X display**: SDL3 and Chromium each open their own X connection; no
-  input path is exercised here.
+  input path is exercised here (the packaged game forwards no input yet).
+- **Duplication with the macOS player**: `player.rs`, the readback/BMP helpers and the close
+  procedure mirror the macOS gate's code instead of sharing it, because sharing would mean
+  editing the macOS gate (out of scope for this slice). A shared module over
+  `CefSurfaceProducer` is a follow-up.
 
 ## Wayland
 

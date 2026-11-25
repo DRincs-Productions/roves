@@ -48,6 +48,7 @@ pub struct Server {
 /// Binds synchronously (so the origin is known before CEF starts) and serves on a dedicated
 /// thread. Port 0 picks a free port, giving every run its own origin.
 pub fn start(root: &Path, port: u16) -> io::Result<Server> {
+    refuse_live_listener(port)?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
     listener.set_nonblocking(true)?;
     let origin = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
@@ -87,6 +88,36 @@ impl Server {
             .join()
             .map_err(|_| io::Error::other("loopback server thread panicked"))?
     }
+}
+
+/// The standard library sets `SO_REUSEADDR` on Unix listeners (needed to rebind the stored
+/// origin port while old connections sit in TIME_WAIT). Darwin then also accepts a second
+/// listener on the exact same address when the first one set `SO_REUSEADDR` too, so the
+/// player could share the saves' origin with another app (CI run 45623549062). A live
+/// listener answers a loopback connect; TIME_WAIT leftovers do not. Linux and Windows
+/// already refuse the duplicate bind, so this only runs on macOS.
+#[cfg(target_os = "macos")]
+fn refuse_live_listener(port: u16) -> io::Result<()> {
+    use std::{
+        net::{SocketAddr, TcpStream},
+        time::Duration,
+    };
+    if port == 0 {
+        return Ok(());
+    }
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    match TcpStream::connect_timeout(&addr, Duration::from_millis(250)) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!("another process is listening on 127.0.0.1:{port}"),
+        )),
+        Err(_) => Ok(()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn refuse_live_listener(_port: u16) -> io::Result<()> {
+    Ok(())
 }
 
 /// Unique per server start: wall-clock nanoseconds and process id, hex (ETag-safe).
