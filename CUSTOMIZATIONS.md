@@ -1,3 +1,23 @@
+## 2026-11-25 - CEF + SDL3 + wgpu candidate: standalone Steamworks feasibility gate (experiment only)
+
+Added: `support/steamworks-gate/{Cargo.toml,Cargo.lock,README.md,src/main.rs}`,
+`.github/workflows/steamworks-gate.yml`. A separate Cargo workspace on `steamworks =0.13.1`
+/ `steamworks-sys 0.13.0`, the versions (and checksums) the legacy Servo shell's `steam`
+feature resolved at git `27ca0811d6d`; the README summarizes that legacy `steam:` protocol,
+`build.rs` `copy_steam_lib`, `roves-api/src/steam.ts` and the old unpinned GSE CI job. The
+binary initializes with Valve's public test App ID 480, gates the `UserStatsStored` callback
+from a no-change `StoreStats` (pumped with `process_callbacks` on the main thread), drops the
+only `Client` (`SteamAPI_Shutdown`) and checks the observed outcome against
+`--expect unavailable|emulation|real|any`. It logs no persona name or Steam ID and changes no
+stats. The workflow builds on `windows-2025`, `macos-15` and `ubuntu-24.04` with the
+redistributable staged next to the binary and requires the graceful "client unavailable"
+outcome plus a failing `--expect real` negative run; a Linux job swaps in a pinned,
+SHA-256-verified Goldberg/GSE `release-2026_09_27` offline and requires init, callback and
+shutdown, labelled `emulation`. Real Steam is a documented manual opt-in smoke only. No store
+upload, credentials or release gating. The CEF player, the macOS/Linux CEF gates and their
+workflows are unchanged; no `mach` surface changed (no roves-action/Packmaster sync), not
+user-facing (no README/wiki change).
+
 ## 2026-11-25 - CEF + SDL3 + wgpu candidate: Linux accelerated-OSR feasibility gate (experiment only)
 
 Added: `support/cef-linux-gate/{Cargo.toml,Cargo.lock,build.rs,README.md,src/main.rs,src/bundle.rs}`,
