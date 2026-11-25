@@ -152,7 +152,8 @@ che va ricontrollato se e in quale versione il bug viene risolto.
 ### Confronto obbligatorio con Chromium
 
 Prima di ogni implementazione importante o intervento sulle prestazioni, consultare il
-codice e la documentazione pertinenti di Chromium nel sottomodulo `support/chromium-reference`.
+codice e la documentazione pertinenti di Chromium alla revisione usata da CEF (online, ad esempio
+source.chromium.org o GitHub `chromium/chromium` a quel commit).
 Identificare come Chromium risolve lo stesso problema e annotare revisione, file consultati,
 scelte rilevanti e compromessi nel piano o nel documento performance prima di scrivere codice.
 Tradurre le idee nel contesto Rust di Roves, valutando prima le API e le librerie mantenute
@@ -162,13 +163,9 @@ sullo stesso hardware, con la stessa scena, risoluzione e frequenza di aggiornam
 gli intervalli tra frame mostrati (P95/P99), la latenza dell'input e il costo CPU/GPU per
 verificare il progresso verso prestazioni paragonabili.
 
-Il sottomodulo è un riferimento alla revisione fissata. Inizializzarlo solo quando serve.
-Per evitare un checkout completo, clonare l'URL di `.gitmodules` con `--filter=blob:none
---no-checkout` nel percorso del sottomodulo, scegliere le directory pertinenti con
-`git sparse-checkout set` e fare checkout detached della revisione indicata da
-`git ls-tree HEAD support/chromium-reference`. Poi eseguire `git submodule init --
-support/chromium-reference` e `git submodule absorbgitdirs support/chromium-reference`.
-La CI ordinaria e i pacchetti di Roves non devono scaricarlo o compilarlo.
+Il sottomodulo `support/chromium-reference` è stato rimosso il 25 novembre 2026 su richiesta
+dell'utente; le citazioni esistenti (revisione `f2700724f59f`) restano verificabili online.
+Non reintrodurre checkout di Chromium nel repository, nella CI o nei pacchetti.
 
 ### Diagnosi del browser con Chrome DevTools (MCP)
 
