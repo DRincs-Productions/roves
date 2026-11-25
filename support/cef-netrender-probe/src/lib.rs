@@ -11,6 +11,10 @@ mod game_rules;
 #[cfg(windows)]
 mod icon_rules;
 #[cfg(windows)]
+mod input;
+#[cfg(windows)]
+mod keys;
+#[cfg(windows)]
 mod mcp;
 #[cfg(windows)]
 mod mcp_rules;
@@ -24,6 +28,8 @@ mod stall;
 mod steam;
 #[cfg(windows)]
 mod timings;
+#[cfg(windows)]
+mod window_icon;
 
 /// Called by bootstrap.exe for the browser process and every CEF subprocess. The browser
 /// process refuses to run without sandbox information (exit 3).

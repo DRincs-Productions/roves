@@ -32,6 +32,20 @@ on:
       - 'support/cef-netrender-probe/src/game_rules.rs'
       # The macOS gate's profile glue (lock, stored origin port), `#[path]`.
       - 'support/cef-macos-gate/src/profile.rs'
+      # The players' shared page input, page-marker registration (+ its marker script) and
+      # window icon (`#[path]`), and the embedded Roves logo.
+      - 'support/cef-netrender-probe/src/input.rs'
+      - 'support/cef-netrender-probe/src/page_init.rs'
+      - 'support/cef-netrender-probe/src/mcp_rules.rs'
+      - 'support/cef-netrender-probe/src/icon_rules.rs'
+      - 'support/cef-netrender-probe/src/window_icon.rs'
+      - 'icon.png'
+      # The macOS gate's session glue and key codes (`#[path]`).
+      - 'support/cef-macos-gate/src/session.rs'
+      - 'support/cef-macos-gate/src/keys.rs'
+      - 'support/cef-macos-gate/src/key_rules.rs'
+      # The player fixture (page marker, saves, input, audio).
+      - 'support/cef-macos-gate/player-fixture/**'
       - '.github/workflows/cef-linux-gate.yml'
   workflow_dispatch:
 
@@ -59,6 +73,7 @@ jobs:
             support/cef-window-probe/src
             support/cef-netrender-probe/src
             support/cef-macos-gate/src
+            support/cef-macos-gate/player-fixture
           sparse-checkout-cone-mode: true
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -69,7 +84,8 @@ jobs:
           sudo apt-get update -q
           # Build: cef-dll-sys (CMake + Ninja for libcef_dll_wrapper), SDL3 from source with
           # its X11 and Wayland backends (Wayland is built so the gap is a runtime one).
-          # Run: CEF 154 runtime libraries, Xvfb, Mesa Vulkan drivers (lavapipe on runners).
+          # Run: CEF 154 runtime libraries, Xvfb, Mesa Vulkan drivers (lavapipe on runners),
+          # PulseAudio (+ pactl) as the sound server of the player fixture's audio check.
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
@@ -77,7 +93,7 @@ jobs:
             libdrm-dev libgbm-dev libegl-dev libdbus-1-dev libudev-dev \
             libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libxcomposite1 \
             libxdamage1 libgbm1 libasound2t64 libpango-1.0-0 libcairo2 libxshmfence1 \
-            xvfb xauth mesa-vulkan-drivers vulkan-tools util-linux
+            xvfb xauth mesa-vulkan-drivers vulkan-tools util-linux             pulseaudio pulseaudio-utils
       - name: toolchain and host
         shell: bash
         run: |
@@ -318,7 +334,8 @@ jobs:
             || { echo "::error::player exit $code, expected the setuid fixture's exit $expected_code (same adapter)"; failed=1; }
           common=('^gate: player profile=isolated cache=' '^gate: cef initialized sandbox=Sandboxed ozone=x11 cache='
             '^gate: sdl video driver=x11$' '^gate: adapter .*backend=Vulkan'
-            "^gate: producer created mode=AcceleratedPaint size=[0-9]+x[0-9]+ url=$o/ profile=.*/game-profile elapsed_ms="
+            "^gate: producer created mode=AcceleratedPaint size=[0-9]+x[0-9]+ url=about:blank profile=.*/game-profile elapsed_ms="
+            '^gate: page markers registered identifier=.+ mcp=false$' "^gate: game navigation url=$o/$"
             "^gate: load-end status=200 url=$o/ ok=true$" '^gate: game loaded elapsed_ms=' '^gate: fresh frame requested ok=true$')
           tail_ok=('^gate: browser closed elapsed_ms=' '^gate: cef shutdown complete$' '^gate: loopback stopped$'
             '^gate: cache removed$' "^gate: shutdown complete exit=$code$" "^gate: exit code=$code$")
@@ -500,6 +517,115 @@ jobs:
           sleep 2
           if pgrep -fl "roves-cef-linux-gate"; then echo "::error::gate processes still running"; failed=1; fi
           test "$failed" = 0
+      # Player fixture (README "Player fixture"), the macOS step's Linux counterpart: the
+      # packaged template is swapped for support/cef-macos-gate/player-fixture (restored
+      # afterwards) and run once with a fresh persistent profile (own XDG_CONFIG_HOME) and the
+      # test-only input hook ROVES_GATE_TEST_INPUT_MS=1000. Required: the window.__ROVES__
+      # marker registered over welding's in-process DevTools channel before the game document,
+      # a host API save written and read back, the project icon.png next to the executable on
+      # the window, the document title, and one synthetic click, ArrowRight press and wheel
+      # notch pushed into SDL's queue, forwarded through Input -> welding and reported by the
+      # page as trusted DOM events (key=ArrowRight code=ArrowRight keyCode=39, no keypress;
+      # wheel deltaY < 0). Audio: a PulseAudio daemon with a null sink stands in for the
+      # desktop's sound server; the click starts a WebAudio oscillator, which must reach
+      # Chromium's audio output as a PulseAudio sink input (pactl) with a running
+      # AudioContext. Synthetic SDL events, not a physical mouse or keyboard; no audible check.
+      - name: run the player fixture (page marker, saves, input, audio, persistent profile)
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/player-fixture"
+          game="$GATE_DIR/game"
+          icon="$GATE_DIR/icon.png"
+          test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
+          test ! -e "$icon" || { echo "::error::$icon already exists"; exit 1; }
+          mkdir -p "$out"
+          export XDG_CONFIG_HOME="$out/xdg-config"
+          # Sound server for the audio check: the session's own runtime directory, a null sink.
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$out/xdg-runtime}"
+          mkdir -p -m 700 "$XDG_RUNTIME_DIR"
+          pulseaudio --daemonize=yes --exit-idle-time=-1 --log-target=file:"$out/pulseaudio.log"
+          for _ in $(seq 50); do pactl info > /dev/null 2>&1 && break; sleep 0.2; done
+          pactl load-module module-null-sink sink_name=roves_ci > /dev/null
+          pactl set-default-sink roves_ci
+          echo "::notice::pulseaudio $(pactl info | sed -n 's/^Server Version: //p') default sink $(pactl get-default-sink)"
+          mv "$game" "$out/template-game"
+          restore() { rm -rf "$game" "$icon"; mv "$out/template-game" "$game"; pulseaudio --kill 2>/dev/null || true; }
+          trap restore EXIT
+          cp -a support/cef-macos-gate/player-fixture "$game"
+          cp icon.png "$icon"
+          log="$out/player-fixture.log"
+          set +e
+          (cd "$out" && ROVES_GATE_TIMEOUT_SECS=60 ROVES_GATE_AUTO_CLOSE_MS=6000 ROVES_GATE_TEST_INPUT_MS=1000 \
+            timeout -k 10 150 xvfb-run -a -s "-screen 0 1280x800x24" "$GATE" > "$log" 2>&1) &
+          player=$!
+          # Chromium's audio output streams while the player runs (sampled twice a second).
+          while kill -0 "$player" 2>/dev/null; do
+            pactl list short sink-inputs >> "$out/sink-inputs.txt" 2>&1
+            sleep 0.5
+          done
+          wait "$player"
+          code=$?
+          set -e
+          grep '^gate:' "$log" || true
+          failed=0
+          expected_code="${FIXTURE_CODE_setuid:-unknown}"
+          test "$code" = "$expected_code" \
+            || { echo "::error::player fixture exit $code, expected the setuid fixture's exit $expected_code (same adapter)"; failed=1; }
+          if grep -q '^gate: FAIL' "$log"; then echo "::error::player fixture reported FAIL"; failed=1; fi
+          origin="$(sed -n 's|^gate: mode=packaged-game dir=.* origin=||p' "$log" | head -1)"
+          test -n "$origin" || { echo "::error::missing: packaged-game mode line with the loopback origin"; exit 1; }
+          o="${origin//./\\.}"
+          src="^gate: console level=[0-9]+ source=$o/game\\.js:[0-9]+ message=\""
+          ordered() { # ordered <label> <pattern>...: each after the previous match
+            local label="$1" last=0 at; shift
+            for pattern in "$@"; do
+              at="$(tail -n "+$((last + 1))" "$log" | grep -n -m1 -E -- "$pattern" | cut -d: -f1 || true)"
+              if [ -z "$at" ]; then echo "::error::$label: missing or out of order: $pattern"; failed=1; else last=$((last + at)); fi
+            done
+          }
+          count() { # count <pattern> <want>
+            local got; got="$(grep -c -E -- "$1" "$log" || true)"
+            test "$got" = "$2" || { echo "::error::$got lines match $1 (expected $2)"; failed=1; }
+          }
+          ordered startup '^gate: window icon source=project size=1024x1024 set=true$' \
+            '^gate: producer created mode=AcceleratedPaint size=[0-9]+x[0-9]+ url=about:blank profile=.+/cef/game-profile elapsed_ms=' \
+            '^gate: page markers registered identifier=.+ mcp=false$' "^gate: game navigation url=$o/$" \
+            "^gate: load-end status=200 url=$o/ ok=true$" '^gate: game loaded elapsed_ms='
+          ordered marker "${src}roves-ci-marker available=true\"$" \
+            "${src}roves-ci-save os_type=[a-z]+ available=true write=true read=hello-roves\"$"
+          ordered title '^gate: title "roves ci player fixture"$'
+          ordered click '^gate: test click requested x=100 y=60 pushed=true$' '^gate: test click forwarded event=down ok=true$' \
+            '^gate: test click forwarded event=up ok=true$' \
+            "${src}roves-test-click-received target=click-target trusted=true button=0 detail=1 " \
+            '^gate: test click marker received$' '^gate: test click complete$'
+          ordered key '^gate: test key requested key=Right pushed=true$' \
+            '^gate: test key forwarded event=down ok=true raw=0x0000 usage=0x4F windows_key_code=0x27 native_key_code=0x0072$' \
+            '^gate: test key forwarded event=up ok=true ' \
+            "${src}roves-test-key-received type=keydown key=ArrowRight code=ArrowRight keyCode=39 repeat=false trusted=true " \
+            '^gate: test key marker received kind=Down$' \
+            "${src}roves-test-key-received type=keyup key=ArrowRight code=ArrowRight keyCode=39 repeat=false trusted=true " \
+            '^gate: test key marker received kind=Up$' '^gate: test key complete$'
+          ordered wheel '^gate: test wheel requested pushed=true$' '^gate: test wheel forwarded ok=true delta=Some\(\(0, 120\)\)$' \
+            "${src}roves-test-wheel-received type=wheel deltaX=0 deltaY=-[0-9.e+-]+ deltaZ=0 deltaMode=[012] trusted=true " \
+            '^gate: test wheel complete$'
+          ordered audio "${src}roves-ci-audio state=running sampleRate=[0-9]+\"$" \
+            "${src}roves-ci-audio later state=running currentTime=[0-9.]+\"$"
+          ordered end '^gate: game input forwarded=[1-9][0-9]* rejected=0 ' '^gate: PASS test input click, key and wheel delivered$' \
+            '^gate: browser closed elapsed_ms=' '^gate: cef shutdown complete$' "^gate: exit code=$code$"
+          count 'roves-test-key-received type=keypress' 0
+          count 'roves-test-click-received' 1
+          count 'roves-test-wheel-received' 1
+          if grep -q 'DevTools listening' "$log"; then echo "::error::a DevTools endpoint was opened"; failed=1; fi
+          streams="$(grep -c -E '^[0-9]+[[:space:]]' "$out/sink-inputs.txt" 2>/dev/null || true)"
+          if [ "${streams:-0}" -gt 0 ]; then
+            echo "::notice::audio: Chromium output reached PulseAudio ($streams sink-input samples: $(grep -m1 -E '^[0-9]+[[:space:]]' "$out/sink-inputs.txt"))"
+          else
+            echo "::error::audio: no PulseAudio sink input while the player ran (Chromium produced no audio output stream)"; failed=1
+          fi
+          sleep 2
+          if pgrep -fl "roves-cef-linux-gate"; then echo "::error::player fixture processes still running after exit"; failed=1; fi
+          test "$failed" = 0
       - name: archive the gate directory
         if: always() && env.GATE_DIR != ''
         shell: bash
@@ -516,6 +642,8 @@ jobs:
             ${{ runner.temp }}/gate-run-*.log
             ${{ runner.temp }}/player-run.log
             ${{ runner.temp }}/player-profile/*.log
+            ${{ runner.temp }}/player-fixture/*.log
+            ${{ runner.temp }}/player-fixture/sink-inputs.txt
             ${{ runner.temp }}/player-last-frame.bmp
             ${{ runner.temp }}/player-game-sha256.txt
             ${{ runner.temp }}/vnt-build-info.txt

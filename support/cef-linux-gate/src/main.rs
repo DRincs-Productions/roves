@@ -36,11 +36,37 @@
 mod game_rules;
 /// The players' shared host API (`/__roves/<module>/<cmd>` on the loopback origin; Windows
 /// player README "Host API"): `core`, `saves` and `steam` (always "unavailable" here). The
-/// `window.__ROVES__` page marker is not injected here (no DevTools channel in the gates), so
-/// `isAvailable()` of roves-api stays `false`; the routes answer direct calls.
+/// `window.__ROVES__` page marker is registered before the game document (`session.rs`), so
+/// `isAvailable()` of roves-api is `true` in the packaged game.
 #[cfg(target_os = "linux")]
 #[path = "../../cef-window-probe/src/host_api.rs"]
 mod host_api;
+/// The Windows player's project-icon header rules (std only).
+#[cfg(target_os = "linux")]
+#[path = "../../cef-netrender-probe/src/icon_rules.rs"]
+mod icon_rules;
+/// The players' shared SDL3 -> welding page input (key codes: `keys.rs`).
+#[cfg(target_os = "linux")]
+#[path = "../../cef-netrender-probe/src/input.rs"]
+mod input;
+/// The macOS gate's pure key-code rules (Chromium's table via `keycode`).
+#[cfg(target_os = "linux")]
+#[path = "../../cef-macos-gate/src/key_rules.rs"]
+mod key_rules;
+/// The macOS gate's key translation (XKB native codes on Linux).
+#[cfg(target_os = "linux")]
+#[path = "../../cef-macos-gate/src/keys.rs"]
+mod keys;
+/// The Windows MCP bridge's pure helpers: only the page marker script and its bootstrap URL
+/// are used here (no MCP bridge on Linux).
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+#[path = "../../cef-netrender-probe/src/mcp_rules.rs"]
+mod mcp_rules;
+/// The Windows player's page-marker registration over welding's DevTools channel.
+#[cfg(target_os = "linux")]
+#[path = "../../cef-netrender-probe/src/page_init.rs"]
+mod page_init;
 #[cfg(target_os = "linux")]
 mod player;
 /// The macOS gate's profile glue, compiled unchanged: `PlayerProfile` (`flock` lock and
@@ -55,6 +81,14 @@ mod profile;
 #[cfg(target_os = "linux")]
 #[path = "../../cef-window-probe/src/server.rs"]
 mod server;
+/// The macOS gate's packaged-game session glue (page markers, input, input test hook).
+#[cfg(target_os = "linux")]
+#[path = "../../cef-macos-gate/src/session.rs"]
+mod session;
+/// The players' shared window icon (Roves logo, project `icon.png` next to the executable).
+#[cfg(target_os = "linux")]
+#[path = "../../cef-netrender-probe/src/window_icon.rs"]
+mod window_icon;
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -452,31 +486,41 @@ mod gate {
                 }
                 let mut events = sdl.event_pump().map_err(|e| format!("SDL events: {e}"))?;
                 let (title, (w, h)) = if server.is_some() {
-                    ("Roves CEF Linux player", GAME_WINDOW)
+                    ("Roves", GAME_WINDOW)
                 } else {
                     ("Roves CEF Linux gate", FIXTURE_WINDOW)
                 };
-                let window = video
-                    .window(title, w, h)
-                    .high_pixel_density()
-                    .build()
-                    .map_err(|e| format!("SDL window: {e}"))?;
+                let mut builder = video.window(title, w, h);
+                builder.high_pixel_density();
+                if server.is_some() {
+                    // Packaged game: resizable (surface and CEF view follow the pixel size).
+                    builder.resizable();
+                }
+                let mut window = builder.build().map_err(|e| format!("SDL window: {e}"))?;
+                if server.is_some() {
+                    // README "Window": project icon.png, else the Roves logo.
+                    let line = crate::window_icon::apply(&mut window, exe.parent());
+                    println!("gate: {line}");
+                    // Committed text (SDL_EVENT_TEXT_INPUT) for the page, as on Windows.
+                    video.text_input().start(&window);
+                }
                 println!(
                     "gate: sdl window pixels={:?} scale={}",
                     window.size_in_pixels(),
                     window.display_scale()
                 );
                 let code = {
-                    let gpu = Gpu::new(&window)?;
+                    let mut gpu = Gpu::new(&window)?;
                     let result = match server.as_ref() {
                         Some(server) => {
                             let sdl_events = sdl.event().map_err(|e| format!("SDL event: {e}"))?;
                             crate::player::drive(
                                 &runtime,
-                                &window,
+                                &mut window,
                                 &mut events,
                                 &sdl_events,
-                                &gpu,
+                                &sdl.mouse(),
+                                &mut gpu,
                                 &server.origin,
                                 &cache.join(crate::profile::GAME_PROFILE_DIR),
                                 timeout,
@@ -792,6 +836,17 @@ mod gate {
 
         pub(crate) fn size(&self) -> PhysicalSize<u32> {
             PhysicalSize::new(self.config.width, self.config.height)
+        }
+
+        /// Reconfigures the surface for a new window pixel size (packaged game, resizable).
+        pub(crate) fn resize(&mut self, width: u32, height: u32) {
+            let (width, height) = (width.max(1), height.max(1));
+            if (width, height) == (self.config.width, self.config.height) {
+                return;
+            }
+            self.config.width = width;
+            self.config.height = height;
+            self.surface.configure(&self.host.device, &self.config);
         }
 
         /// Shows the latest imported frame in the SDL3 window (stretched) or black before

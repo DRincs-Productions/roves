@@ -367,7 +367,7 @@ CI gates are the same code paths. The only shared-path additions are a `popup re
 line (the fixture opens none) and, on a winit event-loop error, running the normal cleanup
 before exit 1.
 
-What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
+What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`; the SDL3 -> welding input path is `src/input.rs`, shared with the macOS and Linux players through `#[path]`, with the Win32 key codes in `src/keys.rs`; the window-icon decoding is `src/window_icon.rs`, also shared):
 
 - **Loading.** The stage-1 window probe's loopback server
   (`support/cef-window-probe/src/server.rs`, compiled here with `#[path]`:

@@ -20,6 +20,8 @@ on:
       # The players' shared host API and its CEF-free unit-test crate.
       - 'support/cef-window-probe/src/host_api.rs'
       - 'support/cef-host-api-tests/**'
+      # The macOS/Linux key-code rules, unit-tested in cef-host-api-tests.
+      - 'support/cef-macos-gate/src/key_rules.rs'
       # Embedded by the game-mode startup screen and play.exe's fallback icon.
       - 'icon.png'
       # Rasterized at build time (build.rs) into the startup-screen wordmark.

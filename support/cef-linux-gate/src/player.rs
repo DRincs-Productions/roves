@@ -21,9 +21,13 @@
 //! producer accepts `user_data_dir` in `new` (it pumps the context initialisation itself),
 //! as on Windows; the macOS two-step preparation is not needed.
 //!
-//! Nothing is injected into the page and no DevTools endpoint or remote-debugging port is
-//! opened. The host API routes (`host_api.rs`, `core` + `saves`) are served on the loopback
-//! origin; their `exit` ends this loop like a window close, and no input is forwarded yet (later slice).
+//! The host API routes (`host_api.rs`, `core` + `saves`) are served on the loopback origin;
+//! their `exit` ends this loop like a window close. The macOS gate's `session.rs` registers
+//! the `window.__ROVES__` marker through welding's in-process DevTools channel before the game
+//! document (no remote-debugging port is opened) and forwards SDL3 page input; the window is
+//! resizable (surface reconfigured, CEF `WasResized`) and takes the game document's title.
+//! `ROVES_GATE_TEST_INPUT_MS` runs the synthetic input test (`session.rs`); the test
+//! auto-close waits for it.
 //!
 //! Test-only environment (CI): `ROVES_GATE_AUTO_CLOSE_MS` pushes one SDL quit event that long
 //! after the first game frame (DMA-BUF device) or after the accepted load-end (no DMA-BUF
@@ -50,6 +54,7 @@ use crate::{
         Gpu, Import, Pacer, distinct_colours, env_u64, frame_pixels_bgra, renderer_sandboxed,
         report_acquire_error, write_bmp,
     },
+    session::Session,
 };
 
 /// Console lines printed before only counting them.
@@ -95,10 +100,11 @@ pub(crate) fn default_root(exe: &Path, dir: &Path) -> Result<PathBuf, String> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn drive(
     runtime: &CefRuntime,
-    window: &sdl3::video::Window,
+    window: &mut sdl3::video::Window,
     events: &mut sdl3::EventPump,
     sdl_events: &sdl3::EventSubsystem,
-    gpu: &Gpu,
+    mouse: &sdl3::mouse::MouseUtil,
+    gpu: &mut Gpu,
     origin: &str,
     profile_dir: &Path,
     timeout: Duration,
@@ -107,7 +113,9 @@ pub(crate) fn drive(
     let auto_close = env_u64("ROVES_GATE_AUTO_CLOSE_MS").map(Duration::from_millis);
     let dump = std::env::var_os("ROVES_GATE_FRAME_DUMP").map(PathBuf::from);
     let size = gpu.size();
-    let url = format!("{origin}/");
+    let mut session = Session::new(origin)?;
+    let url = session.initial_url();
+    let mut scale = window.display_scale();
     let creating = Instant::now();
     let mut producer = LinuxCefProducer::new(
         runtime,
@@ -115,8 +123,10 @@ pub(crate) fn drive(
             surface: CefSurfaceConfig {
                 initial_url: url.clone(),
                 initial_size: size,
-                scale_factor: window.display_scale(),
+                scale_factor: scale,
                 user_data_dir: Some(profile_dir.to_path_buf()),
+                // The page markers' in-process DevTools channel (no port).
+                devtools_protocol: session.devtools(),
                 ..Default::default()
             },
         },
@@ -160,7 +170,28 @@ pub(crate) fn drive(
                     win_event: WindowEvent::CloseRequested,
                     ..
                 } => close_source = close_source.or(Some("window-close")),
-                _ => {},
+                Event::Window {
+                    win_event: WindowEvent::PixelSizeChanged(..),
+                    ..
+                } => {
+                    let (width, height) = window.size_in_pixels();
+                    gpu.resize(width, height);
+                    let resized = producer.resize(gpu.size());
+                    let now = window.display_scale();
+                    let rescaled = if now == scale {
+                        Ok(())
+                    } else {
+                        scale = now;
+                        producer.set_scale_factor(now)
+                    };
+                    println!(
+                        "gate: resized surface={}x{} scale={now} ok={}",
+                        gpu.size().width,
+                        gpu.size().height,
+                        resized.is_ok() && rescaled.is_ok()
+                    );
+                },
+                event => session.sdl_event(&mut producer, window, &event),
             }
         }
         // Host API `exit`/`clear_content_cache` (server thread): the same close path.
@@ -171,10 +202,23 @@ pub(crate) fn drive(
             close_source = Some("game-exit");
         }
         runtime.do_message_loop_work();
+        session.devtools_step(&mut producer);
         while let Some(event) = producer.poll_web_event() {
             let CefSurfaceEvent::Navigation(event) = event else {
                 continue;
             };
+            // The about:blank document of the page-marker registration (`session.rs`).
+            let bootstrap = match &event {
+                NavigationEvent::LoadStart { url }
+                | NavigationEvent::LoadEnd { url, .. }
+                | NavigationEvent::LoadError { url, .. }
+                | NavigationEvent::AddressChanged { url } => session.bootstrap_event(url),
+                _ => false,
+            };
+            if bootstrap {
+                println!("gate: bootstrap document event={event:?}");
+                continue;
+            }
             match event {
                 NavigationEvent::LoadStart { url } => println!("gate: load-start url={url}"),
                 NavigationEvent::LoadEnd { url, http_status } => {
@@ -185,6 +229,7 @@ pub(crate) fn drive(
                         failed = true;
                     } else if loaded_at.is_none() {
                         loaded_at = Some(Instant::now());
+                        session.loaded();
                         println!(
                             "gate: game loaded elapsed_ms={}",
                             started.elapsed().as_millis()
@@ -219,7 +264,12 @@ pub(crate) fn drive(
                         failed = true;
                     }
                 },
-                NavigationEvent::TitleChanged { title } => println!("gate: title {title:?}"),
+                NavigationEvent::TitleChanged { title } => {
+                    println!("gate: title {title:?}");
+                    if session.game_document() {
+                        let _ = window.set_title(&title);
+                    }
+                },
                 NavigationEvent::ConsoleMessage {
                     level,
                     message,
@@ -228,6 +278,7 @@ pub(crate) fn drive(
                 } => {
                     console_lines += 1;
                     *console_levels.entry(level).or_default() += 1;
+                    session.console(&source, &message);
                     if console_lines <= CONSOLE_LOG_CAP {
                         let message: String = message.chars().take(CONSOLE_MESSAGE_MAX).collect();
                         println!(
@@ -325,14 +376,16 @@ pub(crate) fn drive(
                 }
             },
         }
+        session.per_turn(&mut producer, mouse, sdl_events, window);
         if gpu.present(frame.as_ref()) {
             presented += 1;
         }
-        failed |= gpu.failed.load(Ordering::Relaxed);
+        failed |= gpu.failed.load(Ordering::Relaxed) || session.failed;
 
         if let Some(at) = close_at
             && !close_pushed
             && Instant::now() >= at
+            && session.tests_finished()
         {
             close_pushed = true;
             // Through SDL's own queue, so the ordinary close handling above runs.
@@ -368,6 +421,8 @@ pub(crate) fn drive(
         elapsed.as_millis()
     );
     println!("gate: console lines={console_lines} by_level={console_levels:?}");
+    session.finish();
+    failed |= session.failed;
     if let Some(source) = close_source {
         println!("gate: close requested source={source}");
     }

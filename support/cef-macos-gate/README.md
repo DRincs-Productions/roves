@@ -149,9 +149,62 @@ Opening such an `.app` plays the game: no switch, no debug server.
   long after the first game frame, so the ordinary close path runs unattended;
   `ROVES_GATE_FRAME_DUMP=<file.bmp>` writes the last frame before close (32-bit top-down
   BMP of the `Bgra8Unorm` readback).
-- **Not in this slice**: input forwarding (mouse/keyboard/IME through welding's API, and the
-  `CefDoMessageLoopWork`/`NSEvent` question in "Chromium reference"), window title from the
-  page, resize, native error dialogs, signing/notarisation, Steam.
+- **Not in this slice**: native error dialogs, the startup screen, a `.icns` bundle icon,
+  signing/notarisation, Steam. Page marker, input, window and audio: next section.
+
+## Host API marker, input, window and audio
+
+Shared with the Windows player through `#[path]`, so the packaged game behaves the same on
+all three platforms (glue: `src/session.rs`, compiled by the Linux gate too); the project icon is
+`Contents/Resources/icon.png` (`SDL_SetWindowIcon` sets the Dock icon at run time; the
+bundle has no `.icns` yet, so Finder shows the generic app icon):
+
+- **Host API marker**: `window.__ROVES__` (read by `isAvailable()` of
+  `@drincs/roves-api/core`) is registered before the game document exactly as on Windows:
+  `support/cef-netrender-probe/src/page_init.rs` (now generic over welding's
+  `CefSurfaceProducer`) enables the CDP Page domain and calls
+  `Page.addScriptToEvaluateOnNewDocument` through welding's in-process DevTools channel
+  (`devtools_protocol`, `CefBrowserHost::SendDevToolsMessage`; no remote-debugging port),
+  with the script of `mcp_rules::page_marker_script`. The browser starts on `about:blank`;
+  its navigation events are skipped (`gate: bootstrap document ...`) and the game URL is
+  loaded once the registration settled (`gate: page markers registered`, or `unavailable`
+  after 10 s, then the game loads without the marker). No MCP bridge here.
+- **Input** (`support/cef-netrender-probe/src/input.rs`): SDL3 mouse move/buttons (click
+  count from CEF), wheel (120 per line, as on Windows), key down/up, committed text
+  (`SDL_StartTextInput`; IME composition is not forwarded, as on Windows), focus on the first
+  turn after load-end, visibility on minimize/occlusion, display-scale changes and the page's
+  cursor shape. Page input starts at the accepted load-end. Key codes per platform
+  (`src/keys.rs`, `src/key_rules.rs`): `native_key_code` from Chromium's own key table
+  (`ui/events/keycodes/dom/dom_code_data.inc`, through the `keycode` crate) indexed by SDL's
+  scancode: the macOS virtual key code (`kVK_*`) on macOS, the XKB key code on Linux, SDL's
+  `raw` only when the table has none. macOS CEF synthesizes an `NSEvent` from that code and
+  the characters (`TranslateWebKeyEvent`), so key down/up carry the layout character with
+  the modifiers applied (`SDL_GetKeyFromScancode`) or AppKit's function-key character
+  (`NSUpArrowFunctionKey`...), and none for modifiers and CapsLock (a flags change). Linux CEF
+  derives `key`/`keyCode` from `windows_key_code`, so it is the virtual key of the layout
+  character (Chromium's X11 rule) or the Windows player's table for keys without one,
+  falling back to the US key at the same position. Unit tests: `support/cef-host-api-tests`.
+- **Window**: resizable; a pixel-size change reconfigures the wgpu surface and calls
+  welding's `resize` (CEF `WasResized`), plus `set_scale_factor` when the display scale
+  changed (HiDPI). The title follows the game document's `<title>`. The window icon follows
+  the Windows project-icon contract (`window_icon.rs`, `icon_rules.rs`): a valid `icon.png`
+  in the icon directory, else the embedded Roves logo (`gate: window icon source=...`).
+- **Not ported**: the Windows startup screen (logo, wordmark, loading bar) is composed by the
+  Windows player's own compositor (`app.rs`), not a self-contained module; the gates show
+  black until the first game frame.
+- **Audio**: Chromium plays page audio itself (CoreAudio on macOS, PulseAudio with an ALSA
+  fallback on Linux, from its audio service). Neither gate passes a switch that mutes or
+  disables it (no `--mute-audio`, no autoplay override): autoplay follows Chromium's default
+  policy, so WebAudio starts after a user gesture, as in Chrome.
+- **Test-only environment** (CI): `ROVES_GATE_TEST_INPUT_MS=<ms>` (at most 600000): that long
+  after the accepted load-end, one left click at SDL point (100, 60), one ArrowRight press
+  and one wheel notch are pushed into SDL's queue (sentinel device ids) and come back through
+  the ordinary poll -> `Input` -> welding path; the page must report them with the Windows
+  probe's console markers (`roves-test-click-received`, `roves-test-key-received`,
+  `roves-test-wheel-received`), checked by the `game_rules` click/key/wheel sequences side
+  by side. `gate: PASS test input click, key and wheel delivered`, or a `FAIL` (exit 1); the
+  test auto-close waits for it. Fixture: `support/cef-macos-gate/player-fixture` (README
+  "CI").
 
 ## Saves and the player profile
 
@@ -286,6 +339,20 @@ run script, and the new step's root/origin/port extraction and root pattern on a
 log (accepts a valid root, rejects a malformed one). They type-check the macOS code paths of
 welding, objc2 and wgpu Metal; they do not build CEF or SDL, link or run anything.
 
+**Player fixture** (after the persistent-profile step): the packaged template is swapped for
+`player-fixture/` (restored afterwards) with the repository `icon.png` as
+`Contents/Resources/icon.png`, and run once with a fresh persistent profile,
+`ROVES_GATE_TEST_INPUT_MS=1000` and `ROVES_GATE_AUTO_CLOSE_MS=6000`. Required, each in log
+order: project window icon; producer on `about:blank`, `page markers registered`, game
+navigation, accepted load-end; `roves-ci-marker available=true` (the frozen
+`window.__ROVES__`) and `roves-ci-save os_type=macos available=true write=true
+read=hello-roves`; the document title; the click (forwarded down/up, trusted DOM click on the
+button, `detail=1`), the ArrowRight press (`windows_key_code=0x27 native_key_code=0x007C`,
+DOM `key=ArrowRight code=ArrowRight keyCode=39` for keydown and keyup, no keypress) and the
+wheel notch (CEF delta `(0, 120)`, one trusted DOM wheel scrolling up); `PASS test input`;
+clean close; exit 0, or 2 when the fixture gate had no accelerated frame. The click starts a
+WebAudio oscillator whose `AudioContext` state is a notice only.
+
 ## Open risks and blockers (not verified)
 
 - **Accelerated frames on real Macs**: welding's README records IOSurface -> Metal receipts
@@ -321,6 +388,12 @@ welding, objc2 and wgpu Metal; they do not build CEF or SDL, link or run anythin
   continues; signing/notarisation and installing into `/Applications` avoid it. A bundle-id
   based name would avoid it too but would let two games built from this gate share storage.
   Not exercised in CI (the runner's `.app` is not quarantined).
+- **Physical input on a real Mac**: CI pushes SDL events (`SDL_PushEvent`), which never pass
+  through AppKit. Whether real `NSEvent`s reach SDL while `CefDoMessageLoopWork` also pumps
+  the `NSApplication` queue (Chromium reference above), and IME/dead-key behaviour, are
+  manual checks on a Mac.
+- **Audio on a real Mac**: the CI runner may have no output device; the fixture's
+  `AudioContext` state is reported, not required.
 - **Saves across launches**: CI proves the same profile and origin across launches, not that
   a real game's save survives; manual check on a Mac.
 - **Distribution**: code signing, hardened-runtime entitlements for the helpers and

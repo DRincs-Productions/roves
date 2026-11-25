@@ -1319,20 +1319,22 @@ impl Probe {
             // Window icon: the project's `icon.png` next to the executable when valid, the
             // Roves logo otherwise (README "Project icon"). The screens keep the Roves logo.
             let exe = std::env::current_exe().ok();
-            let project = match crate::splash::project_icon(exe.as_deref()) {
-                crate::splash::ProjectIcon::Found { icon, source_px } => {
+            let project = match crate::window_icon::project_icon(
+                exe.as_deref().and_then(std::path::Path::parent),
+            ) {
+                crate::window_icon::ProjectIcon::Found { icon, source_px } => {
                     let set = window.set_icon(&icon);
                     self.log.line(format_args!(
                         "window icon source=project size={source_px}x{source_px} set={set}"
                     ));
                     set
                 },
-                crate::splash::ProjectIcon::Absent => {
+                crate::window_icon::ProjectIcon::Absent => {
                     self.log
                         .line(format_args!("window icon source=roves reason=absent"));
                     false
                 },
-                crate::splash::ProjectIcon::Invalid(error) => {
+                crate::window_icon::ProjectIcon::Invalid(error) => {
                     self.log.line(format_args!(
                         "window icon source=roves reason=invalid error={error}"
                     ));

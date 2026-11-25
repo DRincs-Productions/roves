@@ -24,6 +24,14 @@ on:
       - 'support/cef-window-probe/src/host_api.rs'
       # The Windows player's pure rules (origin, load status, profile name/files), `#[path]`.
       - 'support/cef-netrender-probe/src/game_rules.rs'
+      # The players' shared page input, page-marker registration (+ its marker script) and
+      # window icon (`#[path]`), and the embedded Roves logo.
+      - 'support/cef-netrender-probe/src/input.rs'
+      - 'support/cef-netrender-probe/src/page_init.rs'
+      - 'support/cef-netrender-probe/src/mcp_rules.rs'
+      - 'support/cef-netrender-probe/src/icon_rules.rs'
+      - 'support/cef-netrender-probe/src/window_icon.rs'
+      - 'icon.png'
       - '.github/workflows/cef-macos-gate.yml'
   workflow_dispatch:
 
@@ -245,7 +253,8 @@ jobs:
             test "$code" = 0 || { echo "::error::player exit $code (expected 0)"; failed=1; }
             expected=('^gate: player profile=isolated cache=' '^gate: cef initialized sandbox=Sandboxed'
               '^gate: adapter .*backend=Metal' '^gate: game profile ready dir=.*/game-profile elapsed_ms='
-              "^gate: producer created mode=AcceleratedPaint size=[0-9]+x[0-9]+ url=$o/$"
+              '^gate: producer created mode=AcceleratedPaint size=[0-9]+x[0-9]+ url=about:blank$'
+              '^gate: page markers registered identifier=.+ mcp=false$' "^gate: game navigation url=$o/$"
               "^gate: load-end status=200 url=$o/ ok=true$" '^gate: game loaded elapsed_ms='
               '^gate: fresh frame requested ok=true$'
               '^gate: first game frame after load-end ms=[0-9]+ size=[0-9]+x[0-9]+ format=Bgra8Unorm '
@@ -399,6 +408,92 @@ jobs:
           # Ephemeral runner, but leave no profile behind for later steps.
           rm -rf "$base"
           test "$failed" = 0
+      # Player fixture (README "Player fixture"): the packaged template is swapped for
+      # support/cef-macos-gate/player-fixture (restored afterwards) and run once with a fresh
+      # persistent profile and the test-only input hook ROVES_GATE_TEST_INPUT_MS=1000. Required:
+      # the window.__ROVES__ marker registered over welding's in-process DevTools channel
+      # before the game document (roves-api isAvailable() true), a host API save written and
+      # read back, the project icon.png from Contents/Resources on the window, the document
+      # title, and one synthetic click, ArrowRight press and wheel notch pushed into SDL's
+      # queue, forwarded through Input -> welding and reported by the page as trusted DOM
+      # events (key=ArrowRight code=ArrowRight keyCode=39, no keypress; wheel deltaY < 0).
+      # The click starts a WebAudio oscillator: its state is reported only (the runner may
+      # have no audio device). Synthetic SDL events, not a physical mouse or keyboard.
+      - name: run the player fixture (page marker, saves, input, persistent profile)
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/player-fixture"
+          base="$HOME/Library/Application Support/Roves/Player"
+          game="$APP/Contents/Resources/game"
+          icon="$APP/Contents/Resources/icon.png"
+          test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
+          test ! -e "$icon" || { echo "::error::$icon already exists"; exit 1; }
+          mkdir -p "$out"
+          rm -rf "$base"
+          mv "$game" "$out/template-game"
+          restore() { rm -rf "$game" "$icon"; mv "$out/template-game" "$game"; rm -rf "$base"; }
+          trap restore EXIT
+          ditto support/cef-macos-gate/player-fixture "$game"
+          cp icon.png "$icon"
+          log="$out/player-fixture.log"
+          set +e
+          ROVES_GATE_TIMEOUT_SECS=60 ROVES_GATE_AUTO_CLOSE_MS=6000 ROVES_GATE_TEST_INPUT_MS=1000 \
+            perl -e 'alarm shift; exec @ARGV' 150 "$APP/Contents/MacOS/roves-cef-macos-gate" > "$log" 2>&1
+          code=$?
+          set -e
+          grep '^gate:' "$log" || true
+          failed=0
+          allowed=" 0 "; if [ "${FIXTURE_CODE:-}" = 2 ]; then allowed=" 2 "; fi
+          case "$allowed" in *" $code "*) ;; *) echo "::error::player fixture exit $code (allowed:$allowed)"; failed=1 ;; esac
+          if grep -q '^gate: FAIL' "$log"; then echo "::error::player fixture reported FAIL"; failed=1; fi
+          origin="$(sed -n 's|^gate: mode=packaged-game dir=.* origin=||p' "$log" | head -1)"
+          test -n "$origin" || { echo "::error::missing: packaged-game mode line with the loopback origin"; exit 1; }
+          o="${origin//./\\.}"
+          src="^gate: console level=[0-9]+ source=$o/game\\.js:[0-9]+ message=\""
+          ordered() { # ordered <label> <pattern>...: each after the previous match
+            local label="$1" last=0 at; shift
+            for pattern in "$@"; do
+              at="$(tail -n "+$((last + 1))" "$log" | grep -n -m1 -E -- "$pattern" | cut -d: -f1 || true)"
+              if [ -z "$at" ]; then echo "::error::$label: missing or out of order: $pattern"; failed=1; else last=$((last + at)); fi
+            done
+          }
+          count() { # count <pattern> <want>
+            local got; got="$(grep -c -E -- "$1" "$log" || true)"
+            test "$got" = "$2" || { echo "::error::$got lines match $1 (expected $2)"; failed=1; }
+          }
+          ordered startup '^gate: window icon source=project size=1024x1024 set=true$' \
+            '^gate: producer created mode=AcceleratedPaint size=[0-9]+x[0-9]+ url=about:blank$' \
+            '^gate: page markers registered identifier=.+ mcp=false$' "^gate: game navigation url=$o/$" \
+            "^gate: load-end status=200 url=$o/ ok=true$" '^gate: game loaded elapsed_ms='
+          ordered marker "${src}roves-ci-marker available=true\"$" \
+            "${src}roves-ci-save os_type=macos available=true write=true read=hello-roves\"$"
+          ordered title '^gate: title "roves ci player fixture"$'
+          ordered click '^gate: test click requested x=100 y=60 pushed=true$' '^gate: test click forwarded event=down ok=true$' \
+            '^gate: test click forwarded event=up ok=true$' \
+            "${src}roves-test-click-received target=click-target trusted=true button=0 detail=1 " \
+            '^gate: test click marker received$' '^gate: test click complete$'
+          ordered key '^gate: test key requested key=Right pushed=true$' \
+            '^gate: test key forwarded event=down ok=true raw=0x0000 usage=0x4F windows_key_code=0x27 native_key_code=0x007C$' \
+            '^gate: test key forwarded event=up ok=true ' \
+            "${src}roves-test-key-received type=keydown key=ArrowRight code=ArrowRight keyCode=39 repeat=false trusted=true " \
+            '^gate: test key marker received kind=Down$' \
+            "${src}roves-test-key-received type=keyup key=ArrowRight code=ArrowRight keyCode=39 repeat=false trusted=true " \
+            '^gate: test key marker received kind=Up$' '^gate: test key complete$'
+          ordered wheel '^gate: test wheel requested pushed=true$' '^gate: test wheel forwarded ok=true delta=Some\(\(0, 120\)\)$' \
+            "${src}roves-test-wheel-received type=wheel deltaX=0 deltaY=-[0-9.e+-]+ deltaZ=0 deltaMode=[012] trusted=true " \
+            '^gate: test wheel complete$'
+          ordered end '^gate: game input forwarded=[1-9][0-9]* rejected=0 ' '^gate: PASS test input click, key and wheel delivered$' \
+            '^gate: browser closed elapsed_ms=' '^gate: cef shutdown complete$' "^gate: exit code=$code$"
+          count 'roves-test-key-received type=keypress' 0
+          count 'roves-test-click-received' 1
+          count 'roves-test-wheel-received' 1
+          if grep -q 'DevTools listening' "$log"; then echo "::error::a DevTools endpoint was opened"; failed=1; fi
+          grep -E 'roves-ci-audio' "$log" | while read -r line; do echo "::notice::audio (reported only): $line"; done || true
+          grep -q 'roves-ci-audio' "$log" || echo "::notice::audio: no AudioContext report in the log"
+          sleep 2
+          if pgrep -fl "roves-cef-macos-gate"; then echo "::error::player fixture processes still running after exit"; failed=1; fi
+          test "$failed" = 0
       - name: zip the .app
         if: always() && env.APP != ''
         shell: bash
@@ -413,6 +508,7 @@ jobs:
             ${{ runner.temp }}/gate-run.log
             ${{ runner.temp }}/player-run.log
             ${{ runner.temp }}/player-profile/*.log
+            ${{ runner.temp }}/player-fixture/*.log
             ${{ runner.temp }}/player-last-frame.bmp
             ${{ runner.temp }}/player-game-sha256.txt
             ${{ runner.temp }}/vnt-build-info.txt

@@ -10,11 +10,14 @@
 //! Chromium stores both in the DevTools session and re-applies them in every later renderer,
 //! across process swaps. The host loads the game URL only after the registration settled; a
 //! refused or late registration loads the game without the markers.
+//!
+//! Platform-neutral (any welding `CefSurfaceProducer` with `devtools_protocol` on): the macOS
+//! and Linux players compile this file unchanged through `#[path]`.
 
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use welding::{CefSurfaceProducer as _, windows_cef::WindowsCefProducer};
+use welding::CefSurfaceProducer;
 
 use crate::mcp_rules::truncate_chars;
 
@@ -59,9 +62,9 @@ impl PageInit {
         }
     }
 
-    fn send(
+    fn send<P: CefSurfaceProducer>(
         &mut self,
-        producer: &mut WindowsCefProducer,
+        producer: &mut P,
         method: &str,
         params: Value,
     ) -> Result<i64, String> {
@@ -95,9 +98,9 @@ impl PageInit {
 
     /// Advances the registration; returns its outcome once, when it settled
     /// (`Ok(identifier)` or the reason the markers are unavailable).
-    pub(crate) fn step(
+    pub(crate) fn step<P: CefSurfaceProducer>(
         &mut self,
-        producer: &mut WindowsCefProducer,
+        producer: &mut P,
     ) -> Option<Result<String, String>> {
         let now = Instant::now();
         match self.stage {

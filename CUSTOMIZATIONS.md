@@ -1,3 +1,30 @@
+## 2026-11-25 - CEF macOS/Linux players: host API marker, input, resizable window, icon, audio check
+
+Added: `support/cef-netrender-probe/src/{input,keys,window_icon}.rs`,
+`support/cef-macos-gate/src/{session,keys,key_rules}.rs`, `support/cef-macos-gate/player-fixture/`.
+Changed: the Windows player (`game.rs` keeps only game options/console; its SDL3 -> welding
+`Input` moved unchanged into the shared `input.rs`, generic over welding's
+`CefSurfaceProducer`, with the Win32 key lookups in `keys.rs`; `page_init.rs` generic over the
+producer; `splash.rs` takes the logo/project-icon decoding from the shared `window_icon.rs`;
+`app.rs`, `lib.rs`), both gates (`main.rs`, `player.rs`, `Cargo.toml/lock`, README),
+`support/cef-host-api-tests` (`Cargo.toml/lock`, `lib.rs`) and the three CEF workflows. The
+macOS and Linux players forwarded no input, kept a fixed-size window titled by the gate, had
+no `window.__ROVES__` (roves-api `isAvailable()` was `false`) and no icon. Now, through
+`#[path]` and the shared `session.rs`: the marker is registered over welding's in-process
+DevTools channel before the game document as on Windows (`about:blank` first, its events
+skipped); SDL3 mouse, wheel, keys, committed text, focus, visibility, scale and cursor shape
+reach CEF; the window is resizable (surface reconfigure + `WasResized`, scale on change),
+takes the document title and the project `icon.png` (`Contents/Resources` on macOS, next to
+the executable on Linux; Roves logo otherwise). `native_key_code` comes from Chromium's own
+key table through the `keycode` crate (1.0.0, MIT, already in the engine's lock): macOS
+`kVK_*` with the layout or AppKit function-key character (CEF builds an `NSEvent` from them),
+Linux XKB with the virtual key CEF derives `key`/`keyCode` from. Audio: no switch disables it
+(Chromium's own CoreAudio/PulseAudio output). CI: a player fixture checks marker, save
+roundtrip, icon, title and a synthetic click/ArrowRight/wheel (test hook
+`ROVES_GATE_TEST_INPUT_MS`) on both gates; Linux also requires a WebAudio stream on a
+PulseAudio null sink. The Windows startup screen is not ported (gates show black until the
+first frame). No user-facing package change: the gates stay experiments.
+
 ## 2026-11-25 - Windows CEF player: optional `steam` feature behind the host API
 
 Added: `support/cef-netrender-probe/src/steam.rs`. Changed: the Windows player (`Cargo.toml`

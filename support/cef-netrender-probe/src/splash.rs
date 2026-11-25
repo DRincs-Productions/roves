@@ -10,13 +10,11 @@
 //! The window icon follows the project icon contract (README "Project icon"): a valid
 //! `icon.png` next to `play.exe` (the game's own icon, copied there by the packaging tools)
 //! replaces the Roves logo in the title bar and taskbar; the startup and failure screens
-//! keep the Roves logo either way.
+//! keep the Roves logo either way. The icon decoding itself is platform-neutral and shared
+//! with the macOS and Linux players (`window_icon.rs`).
 
-use std::path::Path;
+use sdl3::{pixels::PixelFormat, surface::Surface};
 
-use sdl3::{iostream::IOStream, pixels::PixelFormat, surface::Surface};
-
-const ICON_PNG: &[u8] = include_bytes!("../../../icon.png");
 /// Logo edge in physical pixels: the 1024 px source halved twice (each halving with linear
 /// filtering averages exactly 2x2 texels).
 pub(crate) const LOGO_PX: u32 = 256;
@@ -57,19 +55,13 @@ pub(crate) struct Wordmark {
 }
 
 pub(crate) fn decode() -> Result<Branding, String> {
-    let mut stream = IOStream::from_bytes(ICON_PNG).map_err(|e| format!("icon stream: {e}"))?;
-    let mut surface = Surface::load_png_io(&mut stream)
-        .and_then(|s| s.convert_format(PixelFormat::RGBA32))
-        .map_err(|e| format!("icon.png decode: {e}"))?;
-    if surface.width() != surface.height() || surface.width() < LOGO_PX {
+    let surface = crate::window_icon::roves_logo()?;
+    if (surface.width(), surface.height()) != (LOGO_PX, LOGO_PX) {
         return Err(format!(
-            "icon.png is {}x{}, expected a square of at least {LOGO_PX} px",
+            "Roves logo is {}x{}, expected {LOGO_PX}x{LOGO_PX}",
             surface.width(),
             surface.height()
         ));
-    }
-    for edge in crate::icon_rules::downscale_steps(surface.width()) {
-        surface = scale(&surface, edge)?;
     }
     let icon = surface
         .convert_format(PixelFormat::RGBA32)
@@ -77,69 +69,6 @@ pub(crate) fn decode() -> Result<Branding, String> {
     let logo = premultiplied_rgba(surface)?;
     let failed = dimmed(&logo);
     Ok(Branding { icon, logo, failed })
-}
-
-/// Where the window icon comes from.
-pub(crate) enum ProjectIcon {
-    /// A valid project `icon.png`, downscaled to at most `WINDOW_ICON_PX`, straight alpha.
-    Found {
-        icon: Surface<'static>,
-        source_px: u32,
-    },
-    /// No `icon.png` next to the executable: the Roves logo stays.
-    Absent,
-    /// An `icon.png` that breaks the contract: the Roves logo stays, the reason is logged.
-    Invalid(String),
-}
-
-/// The project icon next to `exe` (`play.exe`), decoded by SDL3 like the Roves logo after
-/// the header checks of `icon_rules` (size, PNG signature, square bounds).
-pub(crate) fn project_icon(exe: Option<&Path>) -> ProjectIcon {
-    use crate::icon_rules::{MAX_ICON_BYTES, PROJECT_ICON_FILE, check_png, downscale_steps};
-    let Some(path) = exe
-        .and_then(Path::parent)
-        .map(|dir| dir.join(PROJECT_ICON_FILE))
-    else {
-        return ProjectIcon::Absent;
-    };
-    let metadata = match std::fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return ProjectIcon::Absent,
-        Err(error) => return ProjectIcon::Invalid(format!("metadata: {error}")),
-    };
-    if !metadata.is_file() {
-        return ProjectIcon::Invalid("not a regular file".into());
-    }
-    if metadata.len() > MAX_ICON_BYTES {
-        return ProjectIcon::Invalid(format!(
-            "{} bytes exceeds the {MAX_ICON_BYTES}-byte limit",
-            metadata.len()
-        ));
-    }
-    let decoded = std::fs::read(&path)
-        .map_err(|e| format!("read: {e}"))
-        .and_then(|bytes| {
-            let (edge, _) = check_png(&bytes)?;
-            let mut stream = IOStream::from_bytes(&bytes).map_err(|e| format!("stream: {e}"))?;
-            let mut surface = Surface::load_png_io(&mut stream)
-                .and_then(|s| s.convert_format(PixelFormat::RGBA32))
-                .map_err(|e| format!("decode: {e}"))?;
-            if (surface.width(), surface.height()) != (edge, edge) {
-                return Err(format!(
-                    "decoded {}x{} differs from the {edge}x{edge} header",
-                    surface.width(),
-                    surface.height()
-                ));
-            }
-            for step in downscale_steps(edge) {
-                surface = scale(&surface, step)?;
-            }
-            Ok((surface, edge))
-        });
-    match decoded {
-        Ok((icon, source_px)) => ProjectIcon::Found { icon, source_px },
-        Err(error) => ProjectIcon::Invalid(error),
-    }
 }
 
 /// The build-time MetalMania coverage tinted `WORDMARK_COLOR`, premultiplied RGBA8.
@@ -181,28 +110,6 @@ fn dimmed(rgba: &[u8]) -> Vec<u8> {
     rgba.iter()
         .map(|&c| ((u32::from(c) * FAILED_LOGO_ALPHA + 127) / 255) as u8)
         .collect()
-}
-
-/// `SDL_ScaleSurface` with linear filtering to an `edge` square.
-fn scale(surface: &Surface<'_>, edge: u32) -> Result<Surface<'static>, String> {
-    let edge_i32 = i32::try_from(edge).map_err(|e| format!("scale: {e}"))?;
-    // SAFETY: `surface` is valid; SDL returns a new surface owned by the caller or null.
-    let raw = unsafe {
-        sdl3::sys::surface::SDL_ScaleSurface(
-            surface.raw(),
-            edge_i32,
-            edge_i32,
-            sdl3::sys::surface::SDL_SCALEMODE_LINEAR,
-        )
-    };
-    if raw.is_null() {
-        return Err(format!("scale to {edge}: {}", sdl3::get_error()));
-    }
-    // SAFETY: non-null and owned; `Surface` frees it on drop.
-    let scaled = unsafe { Surface::from_ll(raw) };
-    scaled
-        .convert_format(PixelFormat::RGBA32)
-        .map_err(|e| format!("scale format: {e}"))
 }
 
 /// Copies the rows of an RGBA32 surface without the pitch padding.

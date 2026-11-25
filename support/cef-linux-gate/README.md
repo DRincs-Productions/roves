@@ -209,9 +209,11 @@ build instead of the fixture (`src/player.rs`), the Linux counterpart of the mac
   `NO_DMABUF_DEVICE ... game graphics NOT verified`**. There is no PASS line, no frame
   readback and no BMP in that case; CI fails if one appears.
 - Console messages are logged (first 200, 300 characters each) and counted by level; popups
-  are refused by welding and reported. Nothing is injected, no host API is exposed, no
-  DevTools endpoint is opened, **no input is forwarded and no Steam code exists** (later
-  slices).
+  are refused by welding and reported. No remote-debugging endpoint is opened and **no
+  Steam code exists** (later slice). The host API, the `window.__ROVES__` marker, input,
+  window and audio follow the macOS gate's README section "Host API marker, input, window
+  and audio" (same `src/session.rs`, through `#[path]`); the project icon is `icon.png`
+  next to the executable, set on the SDL3 X11 window (`_NET_WM_ICON`).
 - Test-only: `ROVES_GATE_AUTO_CLOSE_MS` pushes one SDL quit event that long after the first
   imported game frame, or after the accepted load-end when there is no import device (where
   no frame can ever be shown), so CI exercises the ordinary close path.
@@ -320,6 +322,18 @@ now has the macOS gate's version; YAML parse and `bash -n` of every `run:` block
 from the gate's own `println!` formats (exit 3 and exit 0 pass; an exit-3 log with a PASS line
 fails).
 
+**Player fixture** (after the persistent-profile step; the macOS step's counterpart): the
+packaged template is swapped for `support/cef-macos-gate/player-fixture` (restored
+afterwards) with the repository `icon.png` next to the executable, and run once with a fresh
+persistent profile (own `XDG_CONFIG_HOME`), `ROVES_GATE_TEST_INPUT_MS=1000` and
+`ROVES_GATE_AUTO_CLOSE_MS=6000`. Same required lines as on macOS, with the XKB native code
+(`native_key_code=0x0072`, ArrowRight) and the setuid fixture's exit code. Audio: a
+PulseAudio daemon with a null sink (`pulseaudio`, `pactl`) runs during the step; the click
+starts a WebAudio oscillator, the page must report `roves-ci-audio state=running` twice
+(the second time 1.5 s later, with an advancing clock), and `pactl list short sink-inputs`,
+sampled twice a second while the player runs, must show Chromium's output stream. That is
+evidence that audio reaches the sound server, not that it is audible.
+
 ## Running elsewhere
 
 Extracting the artifact as a normal user drops the root owner and the setuid bit:
@@ -353,8 +367,12 @@ Xwayland (`DISPLAY` set). Never as root.
   client, so two machines sharing one home could both acquire it. Not handled.
 - **`--password-store=basic`**: unattended choice for the gate (no Secret Service/KWallet
   wait); the player needs a deliberate one before distribution.
-- **SDL3 and CEF on one X display**: SDL3 and Chromium each open their own X connection; no
-  input path is exercised here (the packaged game forwards no input yet).
+- **SDL3 and CEF on one X display**: SDL3 and Chromium each open their own X connection. The
+  packaged game forwards SDL3 input (CI: synthetic SDL events only); physical keyboard
+  layouts, IME and dead keys are manual checks on a desktop.
+- **Audio on desktops**: CI proves an output stream reaches a PulseAudio null sink. PipeWire
+  desktops serve the same PulseAudio protocol (`pipewire-pulse`); a desktop without either
+  falls back to ALSA in Chromium. Audible output stays a manual check.
 - **Duplication with the macOS player**: `player.rs`, the readback/BMP helpers and the close
   procedure mirror the macOS gate's code instead of sharing it, because sharing would mean
   editing the macOS gate (out of scope for this slice). A shared module over
