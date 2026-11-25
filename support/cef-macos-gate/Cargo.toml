@@ -1,0 +1,61 @@
+# macOS feasibility gate for the CEF accelerated off-screen path: CEF 154 OnAcceleratedPaint
+# IOSurface -> welding (Metal import through grafting) -> wgpu 29 Metal -> SDL3 window.
+# Separate Cargo workspace: not part of the Windows player (support/cef-netrender-probe), of
+# its CI, or of any shipped target. See README.md.
+#
+# Pins are the Windows player's, unchanged, so a pass here says something about the same
+# graph: welding e991684 (`wgpu-29` + `cef-runtime`), grafting d903cfa (Cargo.lock),
+# cef =154.5.0 (CEF 154.0.34, Chromium 154.0.8037.98), wgpu =29.0.4, sdl3 0.20.
+# Cargo.lock was seeded from support/cef-netrender-probe/Cargo.lock, so every shared package
+# resolves to the same version.
+[package]
+name = "roves_cef_macos_gate"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+license = "MPL-2.0"
+
+[workspace]
+
+# CEF on macOS never re-executes the main binary: it launches the helper bundles inside
+# Contents/Frameworks. cef's bundler stamps `roves-cef-macos-gate-helper` into all five.
+[package.metadata.cef.bundle]
+helper_name = "roves-cef-macos-gate-helper"
+
+[[bin]]
+name = "roves-cef-macos-gate"
+path = "src/main.rs"
+
+[[bin]]
+name = "roves-cef-macos-gate-helper"
+path = "src/helper.rs"
+
+# Assembles the .app from the already built release binaries; not part of the app.
+[[bin]]
+name = "bundle"
+path = "src/bundle.rs"
+
+[features]
+default = ["bundled-sdl"]
+# SDL3 built from source and linked statically, as in the Windows player.
+bundled-sdl = ["sdl3/build-from-source-static"]
+# Local type-check only, e.g. from Windows:
+#   cargo check --target aarch64-apple-darwin --no-default-features --features dox --bins
+# cef-dll-sys skips the CEF download and the libcef_dll_wrapper build; without
+# `bundled-sdl` no C toolchain for the target is needed. Never used for a runnable bundle.
+dox = ["cef/dox"]
+
+[dependencies]
+welding = { git = "https://github.com/merely-made/wgpu-weld", rev = "e991684bab23d0eaea42d418e216317173ace2a9", default-features = false, features = ["wgpu-29", "cef-runtime"] }
+cef = { version = "=154.5.0", default-features = false, features = ["build-util", "sandbox"] }
+wgpu = { version = "=29.0.4", default-features = false, features = ["std", "metal", "wgsl"] }
+sdl3 = { version = "0.20", default-features = false, features = ["raw-window-handle"] }
+pollster = "0.4"
+dpi = "0.1"
+log = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# bundle.rs only: cef's `BundleInfo::version` is a semver::Version (cef enables semver for
+# its macOS build-util; this names the same crate).
+semver = "1"
