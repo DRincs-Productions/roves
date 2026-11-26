@@ -335,9 +335,35 @@ cef::wrap_request_handler! {
         events: Arc<WebEventQueue>,
         auth: Arc<crate::auth::AuthChallenges>,
         scripts: Arc<crate::app::PendingScripts>,
+        navigation: Arc<crate::navigation::NavigationGuard>,
     }
 
     impl RequestHandler {
+        // Main-frame navigation veto (CefSurfaceConfig::main_frame_navigation_policy):
+        // a refused navigation is cancelled before its request is sent and reported.
+        fn on_before_browse(
+            &self,
+            _browser: Option<&mut cef::Browser>,
+            frame: Option<&mut cef::Frame>,
+            request: Option<&mut cef::Request>,
+            user_gesture: ::std::os::raw::c_int,
+            is_redirect: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            match crate::navigation::before_browse(
+                &self.navigation,
+                frame,
+                request,
+                user_gesture,
+                is_redirect,
+            ) {
+                Some(event) => {
+                    self.events.push(CefSurfaceEvent::Navigation(event));
+                    1
+                },
+                None => 0,
+            }
+        }
+
         fn auth_credentials(
             &self,
             _browser: Option<&mut cef::Browser>,
@@ -404,8 +430,9 @@ impl WeldRequestHandler {
         events: Arc<WebEventQueue>,
         auth: Arc<crate::auth::AuthChallenges>,
         scripts: Arc<crate::app::PendingScripts>,
+        navigation: Arc<crate::navigation::NavigationGuard>,
     ) -> cef::RequestHandler {
-        Self::new(events, auth, scripts)
+        Self::new(events, auth, scripts, navigation)
     }
 }
 
@@ -587,6 +614,8 @@ cef::wrap_load_handler! {
             // Safety: Errorcode wraps cef_errorcode_t which wraps c_int;
             // both are #[repr(transparent)] around a 4-byte integer.
             let code: i32 = unsafe { std::mem::transmute(_error_code) };
+            // The abort a navigation veto caused, already reported as NavigationBlocked.
+            if self.inner.navigation.is_veto_echo(&url, code) { return; }
             self.inner.events.push(CefSurfaceEvent::Navigation(
                 crate::surface::NavigationEvent::LoadError {
                     url,

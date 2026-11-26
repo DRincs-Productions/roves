@@ -128,9 +128,12 @@ Opening such an `.app` plays the game: no switch, no debug server.
   origin is the browser's initial URL) and stops after `cef::shutdown`. The game files are
   never modified or injected into.
 - **Load**: the main frame's `LoadEnd` must be on the origin with 2xx/304; a main-frame
-  `LoadError`, a main frame committed off the origin (welding has no pre-navigation veto, as
-  on Windows), or a renderer death fails the run. Popups are cancelled by welding and only
-  reported. Console messages are printed (first 200, then counted per level).
+  `LoadError`, a main frame committed off the origin (a backstop: welding's main-frame veto,
+  as on Windows, cancels off-origin navigations before they start), or a renderer death fails
+  the run. Refused popups and vetoed navigations are external links: opened in the system
+  browser only for http/https/mailto after a user gesture, at most once a second, logged as
+  scheme + host (the Windows player's `external_link.rs`, README "External links" there).
+  Console messages are printed (first 200, then counted per level).
 - **First frame**: the first accelerated frame imported after the accepted load-end, read
   back once for the log. `ROVES_GATE_TIMEOUT_SECS` (default 60) bounds load-end plus that
   frame; no frame at all gives exit 2, frames only before the load-end give exit 1.
@@ -419,7 +422,15 @@ button, `detail=1`), the ArrowRight press (`windows_key_code=0x27 native_key_cod
 DOM `key=ArrowRight code=ArrowRight keyCode=39` for keydown and keyup, no keypress) and the
 wheel notch (CEF delta `(0, 120)`, one trusted DOM wheel scrolling up); `PASS test input`;
 clean close; exit 0, or 2 when the fixture gate had no accelerated frame. The click starts a
-WebAudio oscillator whose `AudioContext` state is a notice only.
+WebAudio oscillator whose `AudioContext` state is a notice only. External links (run with
+`ROVES_TEST_EXTERNAL_OPEN_LOG=1`, so no browser starts): the click handler assigns
+`location.href` to an https URL on example.com (vetoed, then `external link opened
+url=https://example.com via=navigation launched=false`) and 2 s later, still inside the
+click's user activation, calls `window.open` on example.org (`... url=https://example.org
+via=popup launched=false`); exactly two opens, never one for the load-time `window.open` on
+example.net without a gesture (refused as `no-user-gesture` when Chromium reports it), no
+other refusal, a single load-end, the page's `roves-ci-external still-here same-href=true`,
+and no path or query in the player's own lines.
 
 **Icon, startup screen and Steam** (sections "Application icon", "Startup screen", "Steam"):
 the bundle step builds `roves-cef-macos-gate.icns` from the repository `icon.png`

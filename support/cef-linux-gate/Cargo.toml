@@ -73,6 +73,12 @@ tempfile = { version = "3", default-features = false }
 # table (dom_code_data.inc, generated into the crate) maps SDL's scancode (USB HID usage) to
 # the XKB key code CEF expects in `native_key_code`. MIT; already in the engine's graph.
 keycode = "1.0.0"
+# External links (src/external_link.rs, shared with the macOS/Linux players): URL parsing of the
+# link rule (url 2.5.9, MIT/Apache-2.0, already in the graph through welding/CEF crates) and
+# the system-browser launch (open 5.4.5, MIT; Windows: PowerShell Start-Process with the URL
+# in an environment variable, macOS: /usr/bin/open, Linux: xdg-open and fallbacks).
+url = "2.5.9"
+open = "5.4.5"
 # `steam` feature only: steamworks-rs (MIT/Apache-2.0), the Windows player's pin
 # (steamworks-sys 0.13.0 bundles the Steamworks SDK redistributables, Valve's SDK terms).
 steamworks = { version = "=0.13.1", optional = true }

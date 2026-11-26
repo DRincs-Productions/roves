@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::external_link::{ExternalLinks, main_frame_policy};
 use crate::game::host_api::SteamHandle;
 use crate::game::{Console, GameOptions, Input, Server};
 use crate::game_rules::{
@@ -45,7 +46,7 @@ use serde_json::{Value, json};
 use welding::{
     CefRuntime, CefRuntimeConfig, CefSandboxMode, CefSurfaceConfig, CefSurfaceEvent,
     CefSurfaceProducer as _, CefWindowsSandboxContext, HostWgpuContext, ImportedTexture,
-    InteropBackend, NavigationEvent,
+    InteropBackend, MainFrameNavigationPolicy, NavigationEvent,
     windows_cef::{WindowsCefConfig, WindowsCefProducer},
 };
 
@@ -368,6 +369,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         click_test,
         key_test,
         wheel_test,
+        external_links: ExternalLinks::from_env(),
         event_sender,
         gate: game_mode.then_some(StartupGate::Loading),
         failure_reported: false,
@@ -1134,6 +1136,8 @@ struct Probe {
     key_test: Option<KeyTest>,
     /// `--roves-test-wheel-ms` only: the synthetic wheel sequence.
     wheel_test: Option<WheelTest>,
+    /// Game mode: refused popups and vetoed off-origin navigations (`external_link.rs`).
+    external_links: ExternalLinks,
     /// `--roves-test-click-ms`/`--roves-test-key-ms`/`--roves-test-wheel-ms` only: the SDL
     /// event subsystem the synthetic events are pushed through.
     event_sender: Option<EventSubsystem>,
@@ -1541,6 +1545,12 @@ impl Probe {
                     // Game mode: welding's in-process DevTools channel (`SendDevToolsMessage` +
                     // a message observer; no port), for the page markers and the MCP bridge.
                     devtools_protocol: self.page_init.is_some(),
+                    // Game mode: one document on the loopback origin (`external_link.rs`);
+                    // off-origin main-frame navigations are cancelled before they start. The
+                    // fixture keeps every navigation, unchanged.
+                    main_frame_navigation_policy: self.server.as_ref().map(|server| {
+                        Arc::new(main_frame_policy(&server.origin)) as MainFrameNavigationPolicy
+                    }),
                     ..Default::default()
                 },
             },
@@ -2402,9 +2412,10 @@ impl Probe {
                         self.log.line(format_args!("load-end status={http_status}"));
                         startup_line(&self.log, &mut self.startup, Milestone::LoadEnd);
                     },
-                    // welding exposes no pre-navigation veto (no OnBeforeBrowse hook), so a
-                    // main frame that commits off the loopback origin fails the run and
-                    // closes the browser. History API and fragment routes stay on origin.
+                    // welding's main-frame veto (`main_frame_policy`) cancels off-origin
+                    // navigations before they start, so this is a backstop: a main frame that
+                    // still commits off the loopback origin fails the run and closes the
+                    // browser. History API and fragment routes stay on origin.
                     NavigationEvent::AddressChanged { url } if origin.is_some() => {
                         if on_origin(origin.as_deref().unwrap_or_default(), url) {
                             self.log.line(format_args!("address {url}"));
@@ -2425,7 +2436,27 @@ impl Probe {
                     NavigationEvent::LoadStart { .. } => {
                         startup_line(&self.log, &mut self.startup, Milestone::LoadStart);
                     },
-                    // welding already cancelled it: one surface per producer, no popups.
+                    // welding already cancelled both (one surface per producer, no popups; the
+                    // main-frame veto). Game mode: an external link may go to the system
+                    // browser (`external_link.rs`); the URL is logged as scheme + host only.
+                    NavigationEvent::NewWindowRequested { url, user_gesture }
+                    | NavigationEvent::NavigationBlocked {
+                        url, user_gesture, ..
+                    } if origin.is_some() => {
+                        let via = if matches!(event, NavigationEvent::NewWindowRequested { .. }) {
+                            "popup"
+                        } else {
+                            "navigation"
+                        };
+                        let line = self.external_links.handle(
+                            origin.as_deref().unwrap_or_default(),
+                            via,
+                            url,
+                            *user_gesture,
+                            open::that_detached,
+                        );
+                        self.log.line(format_args!("{line}"));
+                    },
                     NavigationEvent::NewWindowRequested { url, user_gesture } => {
                         self.log.line(format_args!(
                             "popup refused url={url} user_gesture={user_gesture}"

@@ -56,6 +56,8 @@ struct WeldRenderHandlerInner {
     ime: Arc<crate::ime::LatestComposition>,
     events: Arc<WebEventQueue>,
     metrics: Arc<Mutex<crate::view::ViewMetrics>>,
+    /// Main-frame navigation veto, see [`crate::navigation`].
+    navigation: Arc<crate::navigation::NavigationGuard>,
     /// `Some` in software mode (`OnPaint`), see [`crate::cpu_paint`].
     software: Option<crate::cpu_paint::SoftwarePaint>,
 }
@@ -143,6 +145,9 @@ impl LinuxCefProducer {
             );
             let scripts = Arc::new(crate::app::PendingScripts::new(events.clone()));
 
+            let navigation = Arc::new(crate::navigation::NavigationGuard::new(
+                config.surface.main_frame_navigation_policy.clone(),
+            ));
             let inner = WeldRenderHandlerInner {
                 frame_slot: frame_slot.clone(),
                 popup_slot: popup_slot.clone(),
@@ -151,6 +156,7 @@ impl LinuxCefProducer {
                 ime: ime.clone(),
                 events: events.clone(),
                 metrics: metrics.clone(),
+                navigation: navigation.clone(),
                 software: software.clone(),
             };
             let render_handler = cef_backed::WeldRenderHandler::build(inner.clone());
@@ -165,6 +171,7 @@ impl LinuxCefProducer {
                 events.clone(),
                 auth.clone(),
                 scripts.clone(),
+                navigation,
             );
             downloads.set_dir(config.surface.download_dir.clone());
             let download_handler =

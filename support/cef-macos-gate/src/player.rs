@@ -27,18 +27,19 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::atomic::Ordering,
+    sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
 
 use sdl3::event::{Event, WindowEvent};
 use welding::{
     CefRuntime, CefSurfaceConfig, CefSurfaceEvent, CefSurfaceProducer, ImportedTexture,
-    NavigationEvent,
+    MainFrameNavigationPolicy, NavigationEvent,
     macos_cef::{MacosCefConfig, MacosCefProducer},
 };
 
 use crate::{
+    external_link::{ExternalLinks, main_frame_policy},
     game_rules::{load_status_ok, on_origin},
     gate::{Gpu, distinct_colours, env_u64, frame_pixels, renderer_sandboxed, write_bmp},
     session::Session,
@@ -87,6 +88,11 @@ pub(crate) fn drive(
             user_data_dir: Some(profile_dir.to_path_buf()),
             // The page markers' in-process DevTools channel (no port).
             devtools_protocol: session.devtools(),
+            // One document on the loopback origin (`external_link.rs`): off-origin main-frame
+            // navigations are cancelled before they start.
+            main_frame_navigation_policy: Some(
+                Arc::new(main_frame_policy(origin)) as MainFrameNavigationPolicy
+            ),
             ..Default::default()
         },
     };
@@ -145,6 +151,7 @@ pub(crate) fn drive(
     let mut close_pushed = false;
     let mut close_source: Option<&'static str> = None;
     let mut failed = false;
+    let mut external_links = ExternalLinks::from_env();
     let mut console_lines = 0u32;
     let mut console_levels: BTreeMap<i32, u32> = BTreeMap::new();
     let mut timed_out = false;
@@ -241,9 +248,10 @@ pub(crate) fn drive(
                     );
                     failed = true;
                 },
-                // welding exposes no pre-navigation veto, so a main frame that commits off
-                // the loopback origin fails the run (as on Windows). History API and
-                // fragment routes stay on the origin.
+                // welding's main-frame veto (`main_frame_policy`) cancels off-origin
+                // navigations before they start; a main frame that still commits off the
+                // loopback origin fails the run (as on Windows). History API and fragment
+                // routes stay on the origin.
                 NavigationEvent::AddressChanged { url } => {
                     if on_origin(origin, &url) {
                         println!("gate: address {url}");
@@ -274,10 +282,25 @@ pub(crate) fn drive(
                         );
                     }
                 },
-                // welding cancels popup creation itself; reported only.
-                NavigationEvent::NewWindowRequested { url, user_gesture } => {
-                    println!("gate: popup refused url={url} user_gesture={user_gesture}")
-                },
+                // welding cancelled both (no popup browsers; the main-frame veto). An external
+                // link may go to the system browser (`external_link.rs`); the URL is logged
+                // as scheme + host only.
+                NavigationEvent::NewWindowRequested { url, user_gesture } => println!(
+                    "gate: {}",
+                    external_links.handle(origin, "popup", &url, user_gesture, open::that_detached)
+                ),
+                NavigationEvent::NavigationBlocked {
+                    url, user_gesture, ..
+                } => println!(
+                    "gate: {}",
+                    external_links.handle(
+                        origin,
+                        "navigation",
+                        &url,
+                        user_gesture,
+                        open::that_detached
+                    )
+                ),
                 NavigationEvent::ContentProcessTerminated {
                     status,
                     error_code,

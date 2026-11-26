@@ -82,6 +82,8 @@ mod downloads;
 #[cfg_attr(not(feature = "cef-runtime"), allow(dead_code))]
 mod ime;
 #[cfg_attr(not(feature = "cef-runtime"), allow(dead_code))]
+mod navigation;
+#[cfg_attr(not(feature = "cef-runtime"), allow(dead_code))]
 mod permissions;
 #[cfg_attr(not(feature = "cef-runtime"), allow(dead_code))]
 mod popup;
@@ -130,6 +132,7 @@ pub use native_frame::{
     HostWgpuContext, ImportError, ImportedTexture, InteropBackend, NativeFrame, NativeFrameKind,
     NativeFramePixelFormat, WgpuTextureImporter,
 };
+pub use navigation::MainFrameNavigationPolicy;
 pub use permissions::{PermissionId, PermissionKind};
 #[cfg(all(feature = "cef-runtime", target_os = "windows"))]
 pub use runtime::CefWindowsSandboxContext;

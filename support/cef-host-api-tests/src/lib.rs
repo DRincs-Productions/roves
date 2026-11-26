@@ -1,6 +1,7 @@
 //! See Cargo.toml: the players' loopback server and host API under plain `cargo test`, plus
 //! the macOS/Linux key-code rules (`cef-macos-gate/src/key_rules.rs`) and the Windows
-//! player's pure rules they build on (`cef-netrender-probe/src/game_rules.rs`).
+//! player's pure rules they build on (`cef-netrender-probe/src/game_rules.rs`) and the players'
+//! single-document navigation and external-link rules (`external_link.rs`).
 
 #[allow(dead_code)]
 #[path = "../../cef-window-probe/src/server.rs"]
@@ -13,6 +14,10 @@ mod host_api;
 #[allow(dead_code)]
 #[path = "../../cef-netrender-probe/src/game_rules.rs"]
 mod game_rules;
+
+#[allow(dead_code)]
+#[path = "../../cef-netrender-probe/src/external_link.rs"]
+mod external_link;
 
 #[allow(dead_code)]
 #[path = "../../cef-macos-gate/src/key_rules.rs"]

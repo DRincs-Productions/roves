@@ -42,6 +42,8 @@ on:
       - 'support/cef-window-probe/src/host_api.rs'
       # The Windows player's pure rules (origin, load status, profile name/files), `#[path]`.
       - 'support/cef-netrender-probe/src/game_rules.rs'
+      # The players' single-document navigation policy and external-link rule (`#[path]`).
+      - 'support/cef-netrender-probe/src/external_link.rs'
       # The macOS gate's profile glue (lock, stored origin port), `#[path]`.
       - 'support/cef-macos-gate/src/profile.rs'
       # The players' shared page input, page-marker registration (+ its marker script) and
@@ -589,6 +591,7 @@ jobs:
           log="$out/player-fixture.log"
           set +e
           (cd "$out" && ROVES_GATE_TIMEOUT_SECS=60 ROVES_GATE_AUTO_CLOSE_MS=6000 ROVES_GATE_TEST_INPUT_MS=1000 \
+            ROVES_TEST_EXTERNAL_OPEN_LOG=1 \
             timeout -k 10 150 xvfb-run -a -s "-screen 0 1280x800x24" "$GATE" > "$log" 2>&1) &
           player=$!
           # Chromium's audio output streams while the player runs (sampled twice a second).
@@ -657,6 +660,22 @@ jobs:
           count 'roves-test-key-received type=keypress' 0
           count 'roves-test-click-received' 1
           count 'roves-test-wheel-received' 1
+          # External links (README "External links"): the click's same-tab navigation to
+          # example.com is vetoed by welding's main-frame policy and the popup to example.org
+          # is refused by welding; both carry the click's user gesture, so the player hands
+          # them to the system browser (log-only here, ROVES_TEST_EXTERNAL_OPEN_LOG=1: no
+          # browser is launched on the runner). The load-time window.open to example.net has
+          # no gesture and must never be opened. The game document survives (same href, one
+          # load-end, no off-origin commit: that would be a FAIL line).
+          ordered external "$up_click" '^gate: external link opened url=https://example\.com via=navigation launched=false$' \
+            '^gate: external link opened url=https://example\.org via=popup launched=false$'
+          ordered external-page "$up_click" "${src}roves-ci-external still-here same-href=true\"$"
+          count '^gate: external link (opened|open failed) ' 2
+          count '^gate: external link opened url=https://example\.net ' 0
+          count '^gate: load-end status=' 1
+          if grep -E '^gate: ' "$log" | grep -v '^gate: console ' | grep -q -E 'roves-ci-(navigation|popup|no-gesture)|token=secret'; then echo "::error::an external link path or query reached the player's own log lines"; failed=1; fi
+          grep -E '^gate: external link refused ' "$log" | while read -r line; do echo "::notice::external link refused (expected only for example.net): $line"; done || true
+          if grep -E '^gate: external link refused ' "$log" | grep -v -q -E 'url=https://example\.net via=popup reason=no-user-gesture$'; then echo "::error::unexpected external link refusal"; failed=1; fi
           if grep -q 'DevTools listening' "$log"; then echo "::error::a DevTools endpoint was opened"; failed=1; fi
           streams="$(grep -c -E '^[0-9]+[[:space:]]' "$out/sink-inputs.txt" 2>/dev/null || true)"
           if [ "${streams:-0}" -gt 0 ]; then

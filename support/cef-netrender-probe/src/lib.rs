@@ -5,6 +5,8 @@
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]
+mod external_link;
+#[cfg(windows)]
 mod game;
 #[cfg(windows)]
 mod game_rules;

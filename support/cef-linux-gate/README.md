@@ -213,7 +213,9 @@ build instead of the fixture (`src/player.rs`), the Linux counterpart of the mac
   `support/cef-netrender-probe/src/game_rules.rs`; the profile lock and stored-port glue is
   the macOS gate's `src/profile.rs`; both compiled unchanged through `#[path]`.
 - Checked: load-end on the loopback origin with status 2xx/304, no main frame off the origin
-  (welding has no pre-navigation veto, so it fails the run), no load error, no content
+  (welding's main-frame veto cancels off-origin navigations before they start; a commit off
+  the origin is a backstop failure; refused popups and vetoed navigations go through the
+  shared external-link rule, `external_link.rs`), no load error, no content
   process death, sandboxed renderers, the close path (SDL quit or window close request ->
   `close()` -> `OnBeforeClose` -> `cef::shutdown` -> server stop), no leftover processes.
 - The first frame imported after the load-end (`gate: first game frame after load-end`; a
@@ -381,7 +383,10 @@ PulseAudio daemon with a null sink (`pulseaudio`, `pactl`) runs during the step;
 starts a WebAudio oscillator, the page must report `roves-ci-audio state=running` twice
 (the second time 1.5 s later, with an advancing clock), and `pactl list short sink-inputs`,
 sampled twice a second while the player runs, must show Chromium's output stream. That is
-evidence that audio reaches the sound server, not that it is audible.
+evidence that audio reaches the sound server, not that it is audible. External links: the
+same checks as on macOS (`ROVES_TEST_EXTERNAL_OPEN_LOG=1`; the vetoed example.com navigation
+and the example.org popup opened in log-only mode, nothing for the gesture-less example.net
+popup, the document kept).
 
 **Icon, startup screen and Steam** (sections "Application icon", "Startup screen", "Steam"):
 the fixture gate must log no startup-screen line; the isolated packaged run additionally

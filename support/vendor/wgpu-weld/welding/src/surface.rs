@@ -674,6 +674,16 @@ pub struct CefSurfaceConfig {
     /// Follow the window at runtime with
     /// [`CefSurfaceProducer::set_scale_factor`].
     pub scale_factor: f32,
+    /// Main-frame navigation veto (CEF `OnBeforeBrowse`). `None`, the
+    /// default, lets every navigation proceed, as before this existed.
+    ///
+    /// `Some(policy)`: before each main-frame navigation starts (including
+    /// the initial URL, host `navigate_to_url` calls, reloads and server
+    /// redirects) `policy(url)` is called synchronously on CEF's UI thread;
+    /// `false` cancels it before any request is sent and pushes
+    /// [`NavigationEvent::NavigationBlocked`]. Sub-frame navigations are not
+    /// asked about. See [`crate::MainFrameNavigationPolicy`].
+    pub main_frame_navigation_policy: Option<crate::MainFrameNavigationPolicy>,
 }
 
 impl Default for CefSurfaceConfig {
@@ -689,6 +699,7 @@ impl Default for CefSurfaceConfig {
             handle_auth_challenges: false,
             download_dir: None,
             scale_factor: 1.0,
+            main_frame_navigation_policy: None,
         }
     }
 }
@@ -1478,6 +1489,16 @@ pub enum NavigationEvent {
     NewWindowRequested {
         url: String,
         user_gesture: bool,
+    },
+    /// [`CefSurfaceConfig::main_frame_navigation_policy`] refused a
+    /// main-frame navigation, which was cancelled before it started: the
+    /// current document stays. `user_gesture` is CEF's flag for a navigation
+    /// started by a user action (a link click), `is_redirect` marks a server
+    /// redirect of an allowed navigation.
+    NavigationBlocked {
+        url: String,
+        user_gesture: bool,
+        is_redirect: bool,
     },
     /// A `print_to_pdf` finished. `ok` is false when Chromium could not write
     /// the file; the path is the one that was asked for either way.

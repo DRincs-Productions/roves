@@ -72,6 +72,12 @@ form_urlencoded = "1.2"
 # Atomic host API save writes (NamedTempFile + persist). New in the graph: tempfile 3.27 and
 # fastrand; its other dependencies were already locked.
 tempfile = { version = "3", default-features = false }
+# External links (src/external_link.rs, shared with the macOS/Linux players): URL parsing of the
+# link rule (url 2.5.9, MIT/Apache-2.0, already in the graph through welding/CEF crates) and
+# the system-browser launch (open 5.4.5, MIT; Windows: PowerShell Start-Process with the URL
+# in an environment variable, macOS: /usr/bin/open, Linux: xdg-open and fallbacks).
+url = "2.5.9"
+open = "5.4.5"
 # `steam` feature only: steamworks-rs (MIT/Apache-2.0), the version the legacy Servo `steam`
 # feature and support/steamworks-gate resolve (steamworks-sys 0.13.0 bundles the Steamworks
 # SDK redistributables, Valve's SDK terms).

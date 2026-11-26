@@ -364,8 +364,8 @@ Purpose: play an **unmodified built game** through the same CEF accelerated OSR 
 Netrender/wgpu path, and capture presentation with PresentMon next to Chrome. Without
 `--roves-game-dir` nothing changes: fixture, checks, timings, sustained mode, defaults and the
 CI gates are the same code paths. The only shared-path additions are a `popup refused` log
-line (the fixture opens none) and, on a winit event-loop error, running the normal cleanup
-before exit 1.
+line (the fixture opens none; game mode logs `external link ...` instead, "External links"
+below) and, on a winit event-loop error, running the normal cleanup before exit 1.
 
 What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`; the SDL3 -> welding input path is `src/input.rs`, shared with the macOS and Linux players through `#[path]`, with the Win32 key codes in `src/keys.rs`; the window-icon decoding is `src/window_icon.rs`, also shared):
 
@@ -388,14 +388,35 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`; the SDL
   message bridge is exposed (welding's renderer handler only answers host-initiated
   evaluation requests, which game mode never sends); there is no Deno in this process. The
   sandbox path is the probe's (bootstrap.exe broker, `CefSandboxMode::Sandboxed`, exit 3
-  without it). Popups (`window.open`, `target=_blank`) stay refused by welding and are logged
-  as `popup refused url=...`; external links are not opened anywhere. welding has no
-  pre-navigation veto (`OnBeforeBrowse`), so a main frame that **commits** off
-  `http://127.0.0.1:<port>` (exact origin match, unit-tested) is logged as
+  without it). **Single document**: the producer is created with welding's main-frame
+  navigation veto (`CefSurfaceConfig::main_frame_navigation_policy`, CEF `OnBeforeBrowse`;
+  vendored welding change 2) and the policy `external_link::main_frame_policy`: main-frame
+  navigations on `http://127.0.0.1:<port>` (exact origin match, unit-tested: the game URL,
+  same-origin links and same-origin reloads) proceed, `about:blank` proceeds only as the
+  page-marker bootstrap before the game started, everything else (another origin, `file:`,
+  `data:`, `javascript:`, a server redirect off the origin, `about:blank` later) is cancelled
+  **before its request is sent** and the game document stays. A main frame that still commits
+  off the origin (a backstop; the veto should make it impossible) is logged as
   `FAIL game main frame left the loopback origin: <url>` and the browser is closed (exit 1).
-  The off-origin request itself has already been sent by then. History API and fragment
-  routes stay on the origin and are logged as `address <url>`. A main-frame `load-end` that is
-  not 2xx/304 or not on the origin is a `FAIL`; the first accepted one marks the game loaded.
+  History API and fragment routes stay on the origin and are logged as `address <url>`. A
+  main-frame `load-end` that is not 2xx/304 or not on the origin is a `FAIL`; the first
+  accepted one marks the game loaded.
+- **External links** (`src/external_link.rs`, shared with the macOS and Linux players through
+  `#[path]`, unit-tested in `support/cef-host-api-tests`). Popups (`window.open`,
+  `target=_blank`) stay refused by welding (`NewWindowRequested`) and vetoed off-origin
+  navigations arrive as `NavigationBlocked`; for both the player decides: the URL is opened in
+  the system browser (`open::that_detached`, the `open` crate: `ShellExecute`-equivalent
+  `Start-Process` on Windows, `/usr/bin/open` on macOS, `xdg-open` on Linux) only when it is
+  `http`/`https` (with a host) or `mailto`, not on the game origin, the navigation carries
+  CEF's user-gesture flag (a real click on a link or a script running inside its user
+  activation), and no other external open happened in the last second. Everything else
+  (`file:`, `javascript:`, `data:`, custom schemes such as `steam://`, script-initiated opens
+  without a gesture, a burst) is refused. Log lines carry the URL reduced to scheme and host,
+  never its path or query: `external link opened url=https://example.com via=popup|navigation
+  launched=true`, `external link refused url=... via=... reason=scheme|no-user-gesture|
+  rate-limited|game-origin|invalid-url`, `external link open failed ... error=...`. Test-only
+  environment `ROVES_TEST_EXTERNAL_OPEN_LOG=1` (CI): accepted links are logged with
+  `launched=false` and no browser is started.
 - **Input** (welding's maintained `CefSurfaceProducer` API; physical pixels, welding converts
   to DIP): cursor moves, left/middle/right buttons with held-button modifiers, wheel
   (`LineDelta` x 120 = `WHEEL_DELTA` per notch, `PixelDelta` as is), Shift/Ctrl/Alt/Meta.
@@ -2048,8 +2069,10 @@ copy and two CPU waits (below). That is the cost of keeping Chromium unmodified.
   horizontal wheel sign not verified, no touch/pen/drag-and-drop, `<select>` popups not
   drawn (welding's `acquire_popup` is not composed), no gamepad, no audio verification, no
   DevTools window (the optional local MCP bridge uses CDP in-process only, "Local MCP
-  bridge"). Off-origin navigation is detected after commit, not vetoed. External links are
-  never opened (the engine opens them in the system browser after a real click; not here).
+  bridge"). Off-origin main-frame navigations are vetoed before they start and external
+  links open in the system browser after a user gesture ("External links"); verified by the
+  macOS/Linux player-fixture CI steps in log-only mode, not yet on Windows CI and not with a
+  real system browser.
 - Local real-game smoke (CI artifact of commit `1565935d74a`, run 45066625026; template SHA
   `e88e9ac29e7`; Windows, GTX 1050 / DX12, 1280x720, `--roves-compose=wgpu`): main route
   returned 200, CEF imported frame 1, clean exit (code 0) after 581 imports and 2452

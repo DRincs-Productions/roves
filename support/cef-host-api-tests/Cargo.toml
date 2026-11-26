@@ -29,3 +29,5 @@ form_urlencoded = "1.2"
 tempfile = { version = "3", default-features = false }
 # key_rules.rs: Chromium's key-code table (as in the macOS and Linux gates).
 keycode = "1.0.0"
+# external_link.rs: URL parsing of the external-link rule (as in the players).
+url = "2.5.9"

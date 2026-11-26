@@ -23,6 +23,9 @@
 /// origin-port parsing), compiled unchanged; std only. Most of it (Windows keyboard
 /// translation, test sequences) is unused here.
 #[cfg(target_os = "macos")]
+#[path = "../../cef-netrender-probe/src/external_link.rs"]
+mod external_link;
+#[cfg(target_os = "macos")]
 #[allow(dead_code)]
 #[path = "../../cef-netrender-probe/src/game_rules.rs"]
 mod game_rules;

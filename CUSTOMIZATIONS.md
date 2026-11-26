@@ -1,3 +1,29 @@
+## 2026-11-26 - CEF players: single-document navigation veto and external links
+
+Added: `support/cef-netrender-probe/src/external_link.rs` (compiled into the macOS and Linux
+players and `support/cef-host-api-tests` through `#[path]`),
+`support/vendor/wgpu-weld/welding/src/navigation.rs`.
+Changed: vendored welding (`surface.rs`, `lib.rs`, `{windows,macos,linux}_cef/{mod.rs,
+cef_backed.rs}`, `ROVES_PATCHES.md` change 2), the three players (`app.rs`, `player.rs`,
+`main.rs`/`lib.rs`, `Cargo.toml`/`Cargo.lock`: `open` 5.4.5 new, `url` 2.5.9 now direct),
+`support/cef-host-api-tests`, the player fixture `game.js`,
+`.github/workflows/cef-{macos,linux}-gate.yml`, the probe and gate READMEs, `TODO.md`.
+Why: the product rule is one game document on its loopback origin, with external links opened
+in the system browser only after a real user click. welding had no `OnBeforeBrowse`, so an
+off-origin `<a href>` or `location.href` committed (request already sent) and the player could
+only close the game; refused popups were only logged. welding now takes an optional
+main-frame navigation policy (CEF `OnBeforeBrowse` in all three backends; refused navigations
+are cancelled before their request and reported as `NavigationBlocked`; the `ERR_ABORTED`
+echo of the veto is not reported as a load error). The players allow the game origin
+(including same-origin links and reloads, as before) and the `about:blank` page-marker
+bootstrap before the game starts, nothing else. Refused popups and vetoed navigations go to
+the system browser (`open::that_detached`) only for http/https/mailto, off the game origin,
+with CEF's user-gesture flag, at most once per second; everything else (`file:`,
+`javascript:`, `data:`, custom schemes, no gesture, bursts) is refused. Logs carry scheme and
+host only. Test hook `ROVES_TEST_EXTERNAL_OPEN_LOG=1` logs accepted links without launching a
+browser; the macOS/Linux player-fixture steps use it and require the click's vetoed
+navigation and its popup to be opened, the gesture-less popup never, and the document kept.
+
 ## 2026-11-25 - CEF player release workflow (`release.yml`, first tag v0.9.0)
 
 Added: `.github/workflows/release.yml`, `support/cef-netrender-probe/packaging/steam_package.ps1`.
