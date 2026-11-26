@@ -1,4 +1,4 @@
-name: CEF -> wgpu-weld -> wgpu + SDL3 probe
+name: 'Test: Windows player'
 
 # Developer experiment only (support/cef-netrender-probe/README.md): builds the isolated
 # Windows probe (vendored welding e991684 + Roves CPU-paint fallback, CEF 154, wgpu 29.0.4

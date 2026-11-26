@@ -1,4 +1,4 @@
-name: CEF -> wgpu-weld -> wgpu + SDL3 macOS feasibility gate
+name: 'Test: macOS player'
 
 # Developer experiment only (support/cef-macos-gate/README.md). Builds and bundles the macOS
 # gate (same pins as the Windows player: vendored welding e991684 wgpu-29 row, CEF 154.0.34,

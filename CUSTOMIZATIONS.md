@@ -1,3 +1,16 @@
+## 2026-11-26 - Release assets are the player shell only; workflow names
+
+Changed: `.github/workflows/release.yml`, `.github/release/shell_only_windows.py` (new), the
+`name:` of every workflow.
+Why: user decision. The player workflows still package and test the visual-novel-template
+sample game on every platform, but the published `roves_shell_*.zip` assets no longer carry
+it: the release job strips `game/` (`Contents/Resources/game` on macOS), the sample game's
+window `icon.png` and, on Windows, its provenance files, rewrites `PROVENANCE.txt` with a
+"Shell only" section and regenerates `SHA256SUMS.txt`; the zip check now forbids a game.
+roves-action, Packmaster and the wiki add the developer's game to the shell (they no longer
+require `game/index.html` in the base). Workflows are named by role: `Test: Windows player`,
+`Test: macOS player`, `Test: Linux player`, `Release`, and `Test: ...` for the old probes.
+
 ## 2026-11-26 - CI: macOS and Linux only at release time
 
 Changed: `.github/workflows/{cef-linux-gate,cef-macos-gate,steamworks-gate,test,netrender-proof}.yml`,

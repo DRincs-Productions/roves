@@ -1,4 +1,4 @@
-name: 'SDL3 gamepad checks'
+name: 'Test: SDL3 gamepad'
 
 # Branch codex/cef-sdl3-wgpu-probe (CEF + SDL3 + wgpu candidate): the Servo + V8 engine
 # sources, `mach` and every workflow that built them (the Debug package/publication jobs that

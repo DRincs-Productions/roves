@@ -1,12 +1,14 @@
-name: CEF player release
+name: 'Release'
 
 # Versioned release of the Roves CEF + SDL3 + wgpu player (first: v0.9.0). Pushing a tag
 # v*.*.* runs the three player workflows as reusable workflows on that tag, with every check
 # they run on a push (startup screen, frames, input, audio, saves across restarts, Steam under
 # the GSE emulator on Windows/Linux and Steam-missing on macOS, MCP smokes on all three), then
-# publishes their packages as release assets. Each zip is a ready-to-run player with the
-# visual-novel-template sample game in game/ (Contents/Resources/game on macOS), and the base
-# that Roves Packmaster and roves-action repack with a developer's own game:
+# publishes their packages as release assets. The player workflows package and test the
+# visual-novel-template sample game; the release zips are the SHELL ONLY (user decision
+# 2026-11-26): game/ (Contents/Resources/game on macOS), the sample game's window icon and its
+# provenance files are stripped, and Roves Packmaster, roves-action and roves-cli add the
+# developer's own game:
 #   roves_shell_windows{,_steam,_mcp}.zip  Windows x64 (play.exe at the zip root)
 #   roves_shell_macos{,_steam,_mcp}.zip    macOS arm64 (.app at the zip root, ditto zip)
 #   roves_shell_linux{,_steam,_mcp}.zip    Linux x64 (Info-ZIP, unix modes and symlinks kept)
@@ -83,16 +85,27 @@ jobs:
           mkdir "$out"
           find "$art" -maxdepth 2 | sort
           windows_zip() { # <artifact> <package folder> <asset>
-            local dir="$art/$1/$2"
+            local dir="$art/$1/$2" work="$RUNNER_TEMP/shell-$3"
             test -f "$dir/play.exe" || { echo "::error::artifact $1 has no $2/play.exe"; exit 1; }
-            (cd "$dir" && zip -q -r -X "$out/$3" .)
+            cp -a "$dir" "$work"
+            python3 -I "$GITHUB_WORKSPACE/.github/release/shell_only_windows.py" "$work"
+            (cd "$work" && zip -q -r -X "$out/$3" .)
           }
           windows_zip visual-novel-template-roves-cef-windows-x64 visual-novel-template-roves-cef roves_shell_windows.zip
           windows_zip visual-novel-template-roves-cef-steam-windows-x64 visual-novel-template-roves-cef-steam roves_shell_windows_steam.zip
           windows_zip visual-novel-template-roves-cef-mcp-windows-x64 visual-novel-template-roves-cef-mcp roves_shell_windows_mcp.zip
-          cp "$art/cef-macos-player-arm64/roves-cef-macos-arm64.zip" "$out/roves_shell_macos.zip"
-          cp "$art/cef-macos-gate-arm64-steam/roves-cef-macos-arm64-steam.zip" "$out/roves_shell_macos_steam.zip"
-          cp "$art/cef-macos-gate-arm64-mcp/roves-cef-macos-arm64-mcp.zip" "$out/roves_shell_macos_mcp.zip"
+          macos_zip() { # <artifact zip> <asset>: delete the sample game's entries in place
+            cp "$art/$1" "$out/$2"
+            local app
+            app="$(unzip -Z1 "$out/$2" | grep -m1 -oE '^[^/]+\.app/')"
+            test -n "$app" || { echo "::error::$1 holds no .app"; exit 1; }
+            zip -q -d "$out/$2" "${app}Contents/Resources/game/*"
+            # The sample game's window icon, when the package has one (exit 12: nothing matched).
+            zip -q -d "$out/$2" "${app}Contents/Resources/icon.png" || [ $? -eq 12 ]
+          }
+          macos_zip cef-macos-player-arm64/roves-cef-macos-arm64.zip roves_shell_macos.zip
+          macos_zip cef-macos-gate-arm64-steam/roves-cef-macos-arm64-steam.zip roves_shell_macos_steam.zip
+          macos_zip cef-macos-gate-arm64-mcp/roves-cef-macos-arm64-mcp.zip roves_shell_macos_mcp.zip
           linux_zip() { # <artifact> <tar.gz> <asset>
             local tgz="$art/$1/$2" work="$RUNNER_TEMP/unpack-$3"
             test -f "$tgz" || { echo "::error::artifact $1 has no $2"; exit 1; }
@@ -103,6 +116,7 @@ jobs:
             test "$(printf '%s\n' "$tops" | wc -l)" = 1 && test -d "$tops" \
               || { echo "::error::$2 does not hold a single top folder"; exit 1; }
             chmod 0755 "$tops/chrome-sandbox"
+            rm -rf "${tops:?}/game" "$tops/icon.png"
             (cd "$tops" && zip -q -r -y -X "$out/$3" .)
           }
           linux_zip cef-linux-gate-x64 roves-cef-linux-gate-x64.tar.gz roves_shell_linux.zip
@@ -157,7 +171,10 @@ jobs:
               if z is None:
                   continue
               require(asset, files, ['play.exe', 'play.dll', 'play.exe.manifest', 'libcef.dll', 'roves.ico',
-                                     'game/index.html', 'PROVENANCE.txt', 'SHA256SUMS.txt'])
+                                     'PROVENANCE.txt', 'SHA256SUMS.txt'])
+              forbid(asset, files, ['game', 'icon.png'])
+              if any(n.startswith('provenance/visual-novel-template-') for n in files):
+                  fail(asset, 'still carries the sample game provenance')
               if kind == 'steam':
                   require(asset, files, ['steam_api64.dll'])
               else:
@@ -168,6 +185,8 @@ jobs:
               else:
                   forbid(asset, files, ['mcp'])
               provenance = z.read('PROVENANCE.txt').decode('utf-8-sig') if 'PROVENANCE.txt' in files else ''
+              if 'Shell only' not in provenance or 'visual-novel-template' in provenance:
+                  fail(asset, 'PROVENANCE.txt still describes the sample game')
               if (kind == 'mcp') != ('MCP-enabled development package' in provenance):
                   fail(asset, 'PROVENANCE.txt MCP section does not match the package kind')
               if (kind == 'steam') != ('Steam variant (built with --features steam)' in provenance):
@@ -205,8 +224,9 @@ jobs:
                   continue
               app = apps[0]
               main = f'{app}/Contents/MacOS/{app[:-4]}'
-              require(asset, files, [main, f'{app}/Contents/Info.plist', f'{app}/Contents/Resources/game/index.html',
+              require(asset, files, [main, f'{app}/Contents/Info.plist',
                                      f'{app}/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework'])
+              forbid(asset, files, [f'{app}/Contents/Resources/game', f'{app}/Contents/Resources/icon.png'])
               if main in files and not mode(files[main]) & 0o111:
                   fail(asset, f'{main} is not executable in the zip')
               lib = f'{app}/Contents/MacOS/libsteam_api.dylib'
@@ -224,7 +244,8 @@ jobs:
               if z is None:
                   continue
               require(asset, files, ['roves-cef-linux-gate', 'libcef.so', 'chrome-sandbox', 'icudtl.dat',
-                                     'resources.pak', 'v8_context_snapshot.bin', 'locales/en-US.pak', 'game/index.html'])
+                                     'resources.pak', 'v8_context_snapshot.bin', 'locales/en-US.pak'])
+              forbid(asset, files, ['game', 'icon.png'])
               for name in ['roves-cef-linux-gate', 'chrome-sandbox']:
                   if name in files and not mode(files[name]) & 0o111:
                       fail(asset, f'{name} is not executable in the zip (unix modes lost)')
@@ -256,9 +277,11 @@ jobs:
           tag="$GITHUB_REF_NAME"
           readme="https://github.com/$GITHUB_REPOSITORY/blob/$tag/support/cef-linux-gate/README.md#running-elsewhere"
           cat > "$RUNNER_TEMP/notes.md" <<EOF
-          Roves player $tag: the CEF + SDL3 + wgpu desktop player. Every zip is a ready-to-run
-          player package with the [visual-novel-template](https://github.com/DRincs-Productions/visual-novel-template)
-          sample game, and the base Roves Packmaster and roves-action repack with your own game.
+          Roves player $tag: the CEF + SDL3 + wgpu desktop player. Every zip is the player shell
+          only, without a game: Roves Packmaster and roves-action add your game's web build
+          (\`game/\` next to the executable, \`Contents/Resources/game\` in the macOS \`.app\`).
+          Before publishing, every platform was tested with the
+          [visual-novel-template](https://github.com/DRincs-Productions/visual-novel-template) sample game.
 
           | Asset | Platform |
           | --- | --- |

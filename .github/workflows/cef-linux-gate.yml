@@ -1,4 +1,4 @@
-name: CEF -> wgpu-weld -> wgpu + SDL3 Linux feasibility gate
+name: 'Test: Linux player'
 
 # Developer experiment only (support/cef-linux-gate/README.md). Builds the Linux gate (same
 # pins as the Windows player and the macOS gate: vendored welding e991684 wgpu-29 row, CEF 154.0.34,

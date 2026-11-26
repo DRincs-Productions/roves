@@ -1,4 +1,4 @@
-name: Netrender shared-device proof
+name: 'Test: Netrender shared-device proof'
 
 # Isolated, informational feasibility check of support/netrender-shared-device-proof
 # (see its README). It builds only that standalone crate, with the proposed wgpu

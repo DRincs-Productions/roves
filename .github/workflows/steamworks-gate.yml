@@ -1,4 +1,4 @@
-name: Steamworks feasibility gate
+name: 'Test: Steamworks gate'
 
 # Developer experiment only (support/steamworks-gate/README.md). Builds the standalone
 # steamworks =0.13.1 gate on Windows, macOS and Linux and runs it in the two states a CI

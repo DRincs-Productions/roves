@@ -1,4 +1,4 @@
-name: CEF window probe (stage 1)
+name: 'Test: CEF window probe (stage 1)'
 
 # Developer experiment only (support/cef-window-probe/README.md): builds the isolated
 # Windows CEF window probe with the pinned cef-rs/CEF release, opens the unmodified
