@@ -1,216 +1,70 @@
 # Roves
 
-> **Branch `codex/cef-sdl3-wgpu-probe`:** this branch carries only the CEF + SDL3 + wgpu
-> candidate player (`support/cef-windows-player`, built by its own workflow; see its
-> README). The Servo + V8 engine sources, `mach` and their build workflows were removed
-> here on 2026-11-23, so the build, `mach bundle` and platform instructions below describe
-> `main` and do not apply to this branch's checkout. Its packaged Windows player opens on a
-> native startup screen (logo, "Roves" wordmark, animated loading bar) until the game has
-> loaded and painted, and keeps saves between launches. An optional, off-by-default local
-> MCP bridge lets AI agents read and drive a running game during development (`--roves-mcp`
-> or an MCP-enabled development package; see the probe README, "Local MCP bridge").
->
-> **Releases:** pushing a tag `v*.*.*` (first: v0.9.0) builds and verifies the CEF player on
-> Windows x64, macOS arm64 and Linux x64 and publishes ready-to-run zips with the
-> visual-novel-template sample game: `roves_shell_windows.zip`, `roves_shell_macos.zip`,
-> `roves_shell_linux.zip`, their `_steam` variants, the development-only
-> `roves_shell_windows_mcp.zip` and `SHA256SUMS.txt`. They are also the bases that Roves
-> Packmaster and roves-action repack with a game (probe README, "Releases").
+**Roves** turns a built web game (HTML/CSS/JS, e.g. a Vite or webpack `dist/` folder with an
+`index.html`) into a native application that players download and double-click, not a
+browser tab. Game developers never compile anything: they package their build with the
+[`roves` CLI](https://github.com/DRincs-Productions/roves-cli), the
+[GitHub Action](https://github.com/DRincs-Productions/roves-action) or
+[Roves Packmaster](https://github.com/DRincs-Productions/roves-packmaster), and the
+[Roves wiki](https://github.com/DRincs-Productions/roves-wiki) explains every step.
 
-**Roves** (an anagram of *Servo*) is a customized fork of the [Servo](https://servo.org/)
-web engine, repurposed as a runtime for shipping **web-based games** as real native
-applications — instead of as a browser.
+This repository holds the desktop **player** that those tools download, its CI and release
+pipeline, and the agent skills.
 
-## What this is
+## The desktop player
 
-[Servo](https://servo.org/) is a general-purpose web browser engine written in
-[Rust](https://github.com/rust-lang/rust). Roves takes that engine and strips out
-everything that exists to make it *behave like a browser* — the toolbar, the tab strip,
-the address bar, back/forward history, favicon handling, and the state that only existed
-to feed all of that — none of which a game needs (see [CUSTOMIZATIONS.md] for the full,
-itemized list of what was removed and why).
+| Platform | Package | Graphics |
+| --- | --- | --- |
+| Windows x64 | `play.exe` + `game\` | DX12 through wgpu |
+| macOS arm64 | `<name>.app` (game in `Contents/Resources/game`) | Metal through wgpu |
+| Linux x64 | executable + `game/` | Vulkan through wgpu |
 
-What's left is a lean embeddable window that loads a local web bundle (HTML/CSS/JS —
-Phaser, PixiJS, Three.js, or your own engine, anything that renders to a page) full-window,
-looking and behaving like a native application, not a browser tab.
+The game runs in Chromium through [CEF](https://bitbucket.org/chromiumembedded/cef) 154
+(the [`cef`](https://crates.io/crates/cef) crate), off screen: Chromium's own V8 runs the
+game's JavaScript and paints into a GPU texture that
+[wgpu-weld](https://github.com/merely-made/wgpu-weld) hands to a wgpu device owned by the
+player, with no CPU copy on the presentation path and the Chromium sandbox on. SDL3 owns the
+window, the event loop and input. Without an importable GPU (software rendering, some VMs)
+the player falls back to CEF's software paint.
 
-Roves is a **vendored, patched copy** of a pinned Servo release, not a live Git fork or
-submodule — see [AGENTS.md](./AGENTS.md) for why, and [CUSTOMIZATIONS.md] for exactly what
-changed on top of pristine upstream Servo and how those changes are carried forward when
-upstream is upgraded.
+What the player adds around the page:
 
-**JavaScript engine: V8.** Since v0.7.0 Roves runs JavaScript on
-[V8](https://v8.dev/), the engine used by Chrome, instead of Servo's SpiderMonkey. Game code
-needs no changes: libraries such as PixiJS, Three.js and Phaser depend on standard JavaScript
-and Web APIs, not on the engine. Roves's engine layer is `components/roves-js`, which
-implements the JavaScript API Servo's DOM code expects on top of V8.
+- one game document per window: reloads and full navigations are refused; external links
+  open in the system browser only after a real click;
+- the game is served from a private loopback origin, so saves (`localStorage`, IndexedDB)
+  persist between launches;
+- a native startup screen until the game has painted its first frame;
+- the project icon on the window, the executable (`play.exe`) and the macOS app;
+- a host API for the page (`@drincs/roves-api`: `core`, `saves`, `steam`).
 
-V8 also has a **JIT-less** mode, the configuration for platforms that forbid generating
-executable code at runtime, such as consoles. The Servo `js_disable_jit` preference selects
-this mode at engine startup (for example `--pref js_disable_jit=true`); V8 flags cannot change
-after initialization. The V8 smoke checks this preference in a separate fresh process; Linux
-normal/JIT-less browser CI confirms it (the browser smoke runs on Linux only). In that mode there is no WebAssembly, so
-WebAssembly games (Unity, Godot or Emscripten exports) need the regular build. Developer-tools
-JavaScript debugging is not available on V8 yet. SpiderMonkey-only Baseline/Ion, asm.js and
-per-tier Wasm tuning preferences were removed because V8 ignored them; use `js_disable_jit`
-for the supported startup JIT switch. The migration plan and its status are in
-[the V8 migration archive](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md); the [Roves wiki](https://github.com/DRincs-Productions/roves-wiki)
-explains what the engine means for your game. How Roves performs against Chrome with PixiJS,
-three.js, motion, GSAP, Tone.js and Web Workers is on the wiki's
-[Performance page](https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/performance.mdx).
-Static module loading is being changed to return control during network waits and between
-ready modules; Rust and browser CI are still pending, and V8 compilation/linking remain
-synchronous. See the migration plan for current status.
-The V8 smoke CI treats failed assertions, incomplete reports, unexpected skips and missing
-Window/CSP/navigation results as failures. JIT-less Wasm skips and explicitly configured
-missing audio/GPU devices are the only accepted exceptions. Completed suites stop their browser
-without waiting for the full deadline, then undergo the same strict result validation. When WebGPU has no usable adapter,
-`requestAdapter()` resolves with `null`, including for local `file://` pages; a request that
-hangs still fails the smoke check.
-Desktop bundle smoke checks wait for their required page results (including synthetic input and
-save-file checks) with a bounded timeout, so slow cold starts do not truncate later assertions.
-On Linux the Xvfb probe waits up to 60 seconds for the shell's own visible window, never picks
-another client's window on a shared display, and must report its window/input/resize cycle
-before the smoke stops the shell.
-The browser smoke checks ordinary JavaScript prototype mutation and the actual Window separately.
-Window now reuses V8's template-created canonical prototype during Servo binding initialization,
-so V8 can reject prototype replacement while leaving ordinary properties writable. Linux normal/JIT-less CI now confirms
-that immutable Window path. Remote WindowProxy representatives now use V8 Proxy
-so Servo's cross-origin traps actually run; their prototype getter returns null and replacement
-is rejected. Foreign native Window values now get cached wrappers at realm conversion boundaries so
-their prototype handlers run. Browser confirmation of that wrapping path remains pending;
-other origin-aware WindowProxy traps and navigation identities remain under audit. The smoke reports trusted
-eval and Function results, checks the separate Wasm CSP directive and isolates Window diagnostics.
-A separate opt-in GC smoke process starts with `--pref dom_testutils_enabled=true` (default
-false) to expose Servo's existing [`TestUtils.gc()`](https://testutils.spec.whatwg.org/); it checks
-that retained DOM nodes, expandos and closures survive repeated collections, that unreachable
-DOM nodes, cycles and a dropped script-compiled importer are actually collected, and that
-`import()` still works after collection. Ordinary pages must see `TestUtils` undefined. It does
-not measure native finalizers, realm/module/navigation retention or performance; browser
-results are pending CI. The same page also loads one module URL in two same-origin frames and
-checks that each copy's dynamic `import()` stays owned by its own frame: every module source now
-keeps its own engine identity, even with identical code and URL, and natives called from module
-code see that module's private. This can reduce V8's compilation-cache reuse for identical
-module sources; it has not been measured. `import()` inside direct `eval` code is also checked:
-it resolves against the module or script that contains the `eval`, as in browsers. Code created
-with `new Function` (and its generator/async variants) resolves against its calling module or
-script too; like V8's own compilation cache, an identical body built again reuses the first
-caller's origin. The engine's embedder API for completing an `import()` now waits for module
-evaluation without consulting a page-replaced `Promise.prototype.then` (as Servo's own page
-path already did), so the module is never delivered early; a module exporting `then` behaves
-as specified.
-A module's owner page is now a reference the collector traces, not a permanent root; realm and
-module tables still keep pages and modules alive, so this saves no memory yet (not measured).
-The current removed-frame diagnostic still retains its probe: native roots include
-FontFaceSet promises, an injected event listener and a Performance owner consistent with a
-parked task of a closed pipeline. Exited pipelines now discard their parked and ready tasks and reject late tasks, releasing
-native captures on the script thread. FontFaceSet now traces its cached ready promise from the DOM owner, obtaining rooted wrappers
-only for native use. Listeners added with `addEventListener` (and their `AbortSignal` removal
-steps) are now traced from their DOM owner instead of permanently rooted, so a detached node
-whose listener captures it can be collected; the registration-time callback context is kept.
-Inline `on*` handlers (set from script or compiled from an attribute) are traced the same way,
-keeping their identity, position and return value semantics. Element attribute handlers
-(`onclick="…"`) used to compile silently to `null` on V8, because the document in their scope
-chain is a proxy; they now compile with standard `with` scopes, and their errors and stacks
-keep the attribute code's own lines and columns (engine tests only so far). Known gap: their
-`toString()` keeps the attribute code but not the exact text HTML
-[requires](https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler)
-(`function onclick(event) {` + LF + code + LF + `}`); the handler name and the first line
-break are missing. The fix and the inline handler
-GC check have not passed a browser run yet. Attribute handlers keep Servo's CSP check
-(`script-src-attr`, falling back to `script-src`) when the attribute is set; `<body>` handlers
-forwarded to the window (such as `onpopstate`) used to skip it and are now checked against the
-`<body>` element (browser check pending). Smoke pages also cover `'unsafe-hashes'` with an
-exact `sha256` body hash (via `script-src-attr` and via the `script-src` fallback), mismatched
-bodies and nonces, which never authorize a handler attribute, plus a matching hash without
-`'unsafe-hashes'`, which stays blocked (browser check pending). Other callback roots remain under
-investigation; no overall
-frame-retention fix has been validated. Native DOM calls made after Promise reactions now use the actual
-executing realm for origin checks, preventing the initial-runtime realm from being used. Regressions also cover successful and
-throwing native calls between realms with distinct principals. A window proxy returned by a native of another
-realm (such as a remote cross-origin window's `window`/`parent` getters) is converted back to the caller's realm,
-so a held cross-origin `WindowProxy` keeps its identity.
-Its main Window fixture and cross-origin iframe use
-temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
-iframe has a distinct origin. Failed smoke runs retain bounded browser logs and report iframe
-append, load and contentWindow access separately.
-Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks, including
-the source-body value used by the check; the normal-string and ordinary-object paths retain their
-separate JavaScript behavior. The smoke also checks the WPT-required case where every dynamic Function argument is a
-`TrustedScript`. Per-realm V8 Proxy adapters now preserve those arguments for Servo's CSP
-checker, extracting trusted data without invoking altered `toString` methods and retaining
-V8's native constructor/parser. Mixed strings and counterfeit objects remain blocked. This
-path passed Linux normal/JIT-less browser CI; migration status and remaining limitations are tracked in
-[`docs/V8_MIGRATION.md`](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md). Chrome 155 still rejects the all-trusted case.
-GeneratorFunction, AsyncFunction and AsyncGeneratorFunction inherit from the exposed `Function`,
-as in the language specification, so the unwrapped constructor is not reachable through them.
-The experimental WebIDL V8 pilot is retained as a generator-only evaluation tool and is not
-compiled into the production bindings crate.
-WindowProxy prototype reads and writes now use Servo’s same-origin checks; a strict browser smoke
-checks same-origin and cross-origin access, confirmed in Linux normal/JIT-less browser CI.
-Property traps now reuse Servo's origin checks and WebIDL cross-origin annotations; a V8
-WeakMap caches accessors without rooting dead receivers. Linux normal/JIT-less browser CI confirms these property checks.
-The CSP smoke also covers all four dynamic constructors with trusted/plain argument combinations.
-Runtime regressions check that constructor authorization cannot escape into a newTarget getter.
-The patch set includes its cross-origin HTTP and Wasm CSP fixture pages for pristine-source reconstruction.
-Patch 0316 records the mobile container and content-packer boot-set changes previously missing
-from the patch set; the root `Cargo.lock`, this README and the repository-only SDL probe remain
-documented reconstruction exceptions (see CUSTOMIZATIONS.md).
-The opt-in GC smoke now reports removed-frame release separately for module and module-free
-frames; it is a diagnostic, not yet a requirement (see the shell wiki page).
-The events smoke now requires a WindowProxy check across an iframe's origin change (same-origin,
-two successive sandboxed opaque origins, same-origin again, twice); see the shell wiki page. Other realms now keep one
-WindowProxy wrapper per browsing context across those changes (same `contentWindow` and
-message source), without retaining the replaced windows; each new page still gets its own
-cross-origin members.
-Nested Promise and `queueMicrotask` callbacks now share V8's FIFO queue; browser confirmation
-for Roves comes from the V8 CI smoke (see the shell wiki page). Unused job-queue hooks
-left from Servo's old engine, and the small per-runtime allocation they leaked, are removed.
-Its scheduling check accepts a 0 ms timer and the next animation frame in either order, as
-browsers do, and still requires queued microtasks to run first (see the shell wiki page).
-Debug builds can write native V8 heap snapshots at chosen explicit `TestUtils.gc()` calls
-(private `ROVES_V8_HEAP_SNAPSHOT_PATH`/`ROVES_V8_HEAP_SNAPSHOT_GC`, one collection or a short
-series; compiled out of release builds). V8 CI's Linux normal smoke captures a series of three
-(collections 2, 16 and 32) of one long-lived document as a 3-day artifact, to compare retainers
-over time; the counts it reports are diagnostic only (see the shell wiki page). Native
-objects in these snapshots are named after their class (e.g. `HTMLIFrameElement`).
-Maintainers can validate the generated V8 adapter wrappers without rewriting them with
-`support/roves_js/gen_wrappers2.py --check` (see the shell wiki page).
-The V8 caller adapter now handles an empty script stack safely and allows Servo to use its
-callback settings stack when no JavaScript caller is active. Callback activation overrides
-remain under migration audit. Object realm lookup uses V8 creation contexts; unused optional
-context storage was removed from per-object bookkeeping. During proxy construction, GC
-traces owned values before invoking native hooks only once the object cell is initialized.
-WindowProxy GC hooks also tolerate an uninitialized native-owner slot during construction.
-Script/module private references now share the existing ownership hooks and are released
-before runtime teardown; collection of unused metadata during navigation remains under audit.
-The native reference callbacks use Rust's standard Rc count APIs directly.
-Classic-script metadata now follows V8 source/function reachability; pending imports retain
-it until resolution. Linux normal/JIT-less browser smoke passes on commit 8442f4998b9; realm/module retention
-and browser GC stress remain open.
-Shared agent instructions live in [AGENTS.md](./AGENTS.md). The
-[agent workflow audit](./docs/AGENT_WORKFLOW.md) records the development process.
-Escaped `import.meta.resolve` retains its module metadata across garbage collections.
-Inside the V8 backend, unreachable source modules, JSON modules (evaluated, unlinked, or linked in an abandoned graph),
-native functions and immutable prototypes can be collected with their owners. Property-name
-atoms created for enumeration or descriptors are freed once no id references them; explicitly
-pinned atoms still live for the runtime. Realm contexts
-now use a weak registry and traced ownership too; current realms, saved nested entries,
-rooted objects/functions and queued jobs keep their contexts alive. Realm principals are
-released once at collection or shutdown. Promise-job drain scheduling is isolated per runtime,
-so restarting a runtime on the same thread does not inherit an abandoned pending drain. Delayed V8 tasks also keep their original
-registration, so an isolate address reused by a later runtime does not retarget old work. Tasks handed to the
-embedder also carry a weak runtime owner and cannot execute in a replacement runtime. Accepted
-dispatched work is reclaimed before isolate disposal, leaving late event-loop payloads empty. The initial context stays alive; a linked JSON module awaiting evaluation
-is kept only while its module graph is reachable. Local lifetime tests pass; full browser validation
-runs in CI. Servo still roots page globals and loaded module maps: page collection and memory
-or performance improvements have not been demonstrated.
+Each release ships three variants per platform: **standard**; **Steam**, with the Steamworks
+redistributable next to the executable (Steam missing is never fatal); and **MCP**
+(development only), a local bridge that lets an AI agent look at the running game
+(screenshots, frame sequences, page text, HTML/CSS, the PixiJS scene), play it and run
+JavaScript in it. Never ship the MCP variant to players.
 
-For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)
-maps the Roves-specific code areas, their approximate size, existing library dependencies and
-possible opportunities to delegate more work to external libraries.
+Sources: [`support/cef-windows-player`](support/cef-windows-player/README.md) (Windows, and the
+modules the other players share through `#[path]`),
+[`support/cef-macos-gate`](support/cef-macos-gate/README.md),
+[`support/cef-linux-gate`](support/cef-linux-gate/README.md); the MCP server is in
+[`support/cef-windows-player/mcp`](support/cef-windows-player/mcp/README.md).
 
-[CUSTOMIZATIONS.md]: ./CUSTOMIZATIONS.md
+## Mobile (experimental)
+
+Android APKs and iOS builds still come from the earlier Servo-based engine at the tag
+[`v0.7.15`](https://github.com/DRincs-Productions/roves/tree/v0.7.15), which the CLI and the
+Action check out on demand (`roves android`, `roves ios`). See the wiki's mobile page.
+
+## Releases
+
+Pushing a tag `v*.*.*` runs [`release.yml`](.github/workflows/release.yml): it builds and
+verifies the three players (with the
+[visual-novel-template](https://github.com/DRincs-Productions/visual-novel-template) sample
+game) and publishes `roves_shell_{windows,macos,linux}.zip`, their `_steam` and `_mcp`
+variants and `SHA256SUMS.txt`. The published zips are the shell only: the CLI, the Action and
+Packmaster add the developer's game as `game/`. A push to a `release-check/<name>` branch runs
+the same pipeline as a dry run without publishing. Ordinary commits run the Windows player
+workflow only; macOS and Linux run at release time or by hand.
 
 ## Agent skills
 
@@ -224,694 +78,33 @@ frame sequences, page text and controls, HTML/CSS inspection and the PixiJS scen
 ([PixiJS devtools reference](skills/playtest/references/pixijs-devtools.md)).
 `categories.json` maps each skill to its folder.
 
-## Naming: "Roves" vs. "Servo" vs. `servoshell`
-
-Every label a player or the OS actually sees — the window title, the taskbar/dock app
-identity, the Linux `.desktop` menu entry — says **Roves**, not Servo (see
-[CUSTOMIZATIONS.md] for the exact rename). The one exception: the portable bundle's own
-binary/bundle name (`play.exe`/`play.app`/`play`) is a neutral placeholder, deliberately the
-same generic name on every platform rather than "Roves"-branded — see "Portable vs.
-installable packages" below. What's still named after the upstream project:
-
-- The underlying engine itself is genuinely still Servo — Roves doesn't fork Servo's
-  rendering/DOM/script internals, just the shell around it (see "What this is" above) —
-  so places that credit *the engine* (not the product) intentionally still say "Servo".
-- The binary and Cargo package are, and will keep being, named `servoshell` (e.g.
-  `target/release/servoshell`, `ports/servoshell/`). Renaming it to something like
-  `rovesshell` was considered and deliberately decided against: it would touch the upstream
-  Python build tooling under `python/servo/` too (not just branding, and not verifiable
-  without a real build), for no functional benefit. This is a settled decision, not a
-  pending one — don't expect or propose a `rovesshell` rename later.
-
-## Goal
-
-Ship web-based games as real, native, double-click-to-run desktop (and, eventually,
-console) binaries — without bundling a full general-purpose browser engine like Electron
-or CEF, and without paying Chromium's footprint and overhead for a game that only ever
-needs a canvas and a window. Servo is already lighter and written in Rust; this fork trims
-it down further to exactly what a game needs and nothing else.
-
-`./mach bundle` (see its own `--help`) turns a build into that double-click-ready package
-per target platform — see [CUSTOMIZATIONS.md] for what it produces on each.
-
-## Content packing & compression
-
-By default, `./mach bundle --content-dir dist/` does **not** copy your game's built web
-content into the release as plain, individually browsable files — the loose `.html`/`.js`/
-image/audio files a bundler like Vite produces are exactly what someone poking around inside
-an unzipped release would otherwise find and lift straight out. Instead, `--content-dir` is
-packed into a handful of `tar`+`zstd` archives, split into two tiers:
-
-- A small **boot set** — the html file itself, plus whatever it directly references
-  (`<script src>`, `<link href>`, `modulepreload` hints, etc.), every `.js`/`.mjs`/`.css` file
-  (so lazily imported chunks never wait on an asset pack), plus anything matched by
-  `--content-boot-include`. This gets extracted eagerly, in full, before the engine even
-  starts — into your OS's own cache directory (`~/.cache`, `Library/Caches`, `%LOCALAPPDATA%`
-  — real disk, not anywhere inside the shipped game folder, and not a RAM-backed location
-  either, which matters once a project's assets reach the multi-GB range).
-- **Everything else** stays compressed and is decompressed on demand, per archive, the first
-  time the running page actually requests a file from it — so a large game's first launch
-  only ever pays for what that session actually touches, not the whole install. Once
-  decompressed, a pack stays that way (including across relaunches) until the packed content
-  actually changes.
-
-This is about not handing out your source assets for free by default, **not** DRM or
-anti-tampering — the archives aren't encrypted, and anyone willing to run the extractor
-themselves (it ships right there in the bundle) gets the original files back byte-for-byte.
-
-How the split works, so a large game doesn't turn into either one giant archive or hundreds
-of tiny ones: past the boot set, `dist/`'s own root files become one archive; each direct
-subfolder's own files become another; everything nested deeper than that (however many
-levels) is flattened into a third archive per top-level subfolder. Every archive is capped at
-500 MB by default, splitting into further parts past that. Files with an already-compressed
-extension (images, audio, video, fonts, existing archives) skip zstd entirely instead of
-spending CPU for no size win.
-
-How small the boot set stays depends on your own bundler's code-splitting: a bundler that
-statically imports (or `modulepreload`-hints) most of the app from the entry HTML ends up with
-most of the app in the boot set too — same as a plain browser would eagerly fetch it. Structure
-anything not needed immediately (a later level, optional content) behind a dynamic `import()`
-to keep it lazy.
-
-Tune or disable all of this with flags on `./mach bundle`:
-
-| Flag | Description | Default |
-| --- | --- | --- |
-| `--content-compress <auto\|none>` | Pack `--content-dir` into tar+zstd archives (`auto`), or copy it in as loose, uncompressed files with none of the above (`none`). | `auto` |
-| `--content-compression-level <N>` | zstd compression level used by `--content-compress=auto`. Low favors speed. | `1` |
-| `--content-max-pack-size <SIZE>` | Max size per content archive (e.g. `500M`, `1G`) before splitting into further parts. | `500M` |
-| `--content-exclude <GLOB>` | Leave files matching this glob (relative to `--content-dir`) loose/uncompressed instead of packing them — e.g. a save-data or user-config subfolder that shouldn't sit inside a read-only archive. Repeatable. | unset |
-| `--content-boot-include <GLOB>` | Force files matching this glob (relative to `--content-dir`) into the eager boot set, beyond the html file and whatever it directly references — e.g. a splash image. Repeatable. | unset |
-
-See the "Pack game content into compressed archives" and "Split packed content into an eager
-boot set + lazy, on-demand extraction" entries in [CUSTOMIZATIONS.md] for the full design
-(archive naming, the manifest format, the extraction cache, the `file:` handler, and why
-`tar`+`zstd`) and for what's deliberately out of scope today (per-file integrity hashes, real
-encryption). A native, Roves-branded boot splash *is* shown throughout both extraction and
-your page's own initial load — see the "Native boot splash" and later boot-splash entries in
-[CUSTOMIZATIONS.md] for how it works.
-
-## Supported platforms
-
-| Device | Status | Compatibility library |
-| --- | --- | --- |
-| **Windows** (x64) | ✅ Implemented | native (Rust std) |
-| **macOS** (Apple Silicon and Intel) | ✅ Implemented | native (Rust std) |
-| **Linux** (x64) | ✅ Implemented | native (Rust std) |
-| Android | 🚧 Native WebView APK, `mach bundle --android`, real release signing | Android WebView |
-| iOS/iPadOS | 🚧 Native WKWebView, `mach bundle --ios`, real release signing | WKWebView |
-| Nintendo Switch | 🚧 In development | `nx` |
-| Nintendo 3DS | 🚧 In development | `ctru-rs` |
-| PlayStation Portable (PSP) | 🚧 In development | `rust-psp` |
-| PlayStation Vita | 🚧 In development | `vitasdk-rs` |
-| PlayStation 4 | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
-| PlayStation 5 | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
-| Xbox One | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
-| Xbox Series X\|S | 🚧 In development | — (official SDK, NDA-gated; no public Rust crate) |
-
-Desktop targets (Windows, macOS, Linux) use Servo. Mobile games use the system
-WebView and do not ship or compile Servo. See [mobile packaging](support/MOBILE.md)
-for Android APK and iOS app instructions — both platforms run edge-to-edge
-(status bar and system navigation/home indicator hidden) and are built the
-same way as desktop, via `mach bundle --android`/`--ios`, no separate Xcode-
-or Gradle-only workflow needed. `--android-release`/`--ios-release` produce a
-real, signed release build instead of the default debug/simulator one — see
-`support/MOBILE.md` for the required signing credentials (an Android keystore
-you can generate yourself, or an Apple Distribution certificate + provisioning
-profile from your own Apple Developer Program account for iOS). CI builds a
-native WebView smoke-test APK on Android and verifies Android release signing.
-The per-commit iOS Simulator build is deferred; verify iOS with a signed
-`mach bundle --ios --ios-release` build. Console targets remain on the roadmap.
-
-## Embedding
-
-Your web content has no *build-time* way to know it's running inside Roves rather than a
-regular browser (or, for that matter, Tauri). A build-time signal is still an option if you
-want one (the parent pixi-vn-react-template project this fork ships with exposes a
-`process.env.ROVES_BUILD` value, set by whoever builds specifically for Roves — see its
-`vite.config.ts` — a convention of that project, not something Roves itself provides). For a
-genuine *runtime* check instead, Roves
-injects `window.__ROVES__ = true` into every page as soon as `<head>` exists, before the
-page's own scripts run (see the "Inject a `window.__ROVES__` marker" entry in
-[CUSTOMIZATIONS.md]) — use `@drincs/roves-api/core`'s `isAvailable()` (see below) to read it
-rather than checking `window.__ROVES__` directly: `false` in a plain browser, `true` only
-when actually running under Roves, no build step required, no async wait needed.
-
-### Talking to native APIs
-
-Web content can't call into Rust directly — there's no Tauri-style `invoke()` runtime built
-in. Instead, Roves lets native code register custom URL schemes (`ProtocolHandler`s — see
-`ports/servoshell/desktop/protocols/`) that respond to ordinary `fetch()` calls from page
-JS. One is shipped today:
-
-- **`roves:`** (`protocols/roves.rs`) — a small, generic "control this app" surface: window/
-  process lifecycle (`exit`/`close_window`) and `is_available` (see below).
-
-[**`@drincs/roves-api`**](../roves-api) is the JS package wrapping it, deliberately shaped
-to feel familiar if you already know `@tauri-apps/api` (though it's a real, independent
-implementation, not a shim over Tauri's runtime):
-
-- `@drincs/roves-api/core` — the generic `invoke(cmd, args)`, talking to `roves:`, plus
-  `isAvailable()` — a genuine, synchronous runtime "is this page running inside Roves" check —
-  and `systemInfo()`, host OS/engine diagnostics (OS type/version, bitness, architecture, the
-  running Servo build's own version) for bug reports and graphics-compatibility triage.
-- `@drincs/roves-api/process` — `exit()`, built on `core`.
-- `@drincs/roves-api/saves` — save-game storage; see "Save data" below.
-
-See the "Roves' own general-purpose `invoke()` bridge" entry in [CUSTOMIZATIONS.md] for how
-the Rust side is wired up.
-
-### Content root & client-side routing
-
-Your bundled content is served from a fixed virtual origin, `game://content/`, not the raw
-`file://<absolute path>/index.html` you might expect — and the app boots by requesting the
-*root* (`game://content/`), not `game://content/index.html` directly. Both exist for the same
-reason: under a real `file://` path, `location.pathname` is the actual OS path and never
-matches `/`, so any client-side history router (React Router, TanStack Router, Vue Router in
-"history" mode, ...) falls back to its own "not found" page immediately, at boot and on every
-`pushState` navigation. `game://content/` sidesteps this the same way Tauri's own
-`tauri://localhost/` does — a real, root-relative origin your router's own routes match
-against, so History API navigation "just works". A direct navigation/reload on a sub-route
-(no matching file on disk) falls back to serving your bundle's own entry HTML, the same way a
-static host's SPA fallback (nginx's `try_files`, Vite's `historyApiFallback`) does. See the
-"Virtual content root (`game:` protocol)" entry in [CUSTOMIZATIONS.md] for the full design.
-
-A custom, non-`http(s)` scheme like `game:` isn't always transparent to every JS library —
-some hardcode `http`/`https` in their own URL handling. PixiJS is one: it needs both
-`resolver.rootPath` (set *before* `Assets.init()`) and `basePath` set to
-`` `${location.protocol}//${location.host}/` ``, or a root-absolute asset reference
-(`/foo.png`) fails to load. See the
-[wiki](https://github.com/DRincs-Productions/roves-wiki) for the exact snippet, why `basePath`
-alone isn't enough, and other framework-specific gotchas.
-
-### Steam
-
-Steam support is opt-in at build time: passing `--features steam` (e.g.
-`./mach build --features steam`) compiles in a second, dedicated custom protocol,
-`steam:` (`protocols/steam.rs`), rather than routing it through `roves:` — Steamworks is a
-large, self-contained SDK surface, not a generic app command. When the feature isn't
-enabled — the default — the `steam:` scheme doesn't exist in the binary at all.
-
-It wraps the [`steamworks`](https://crates.io/crates/steamworks) crate, which binds the
-official Steamworks SDK (achievements, stats, DLC checks, the overlay, the store page). If
-the feature is enabled but the app wasn't actually launched through Steam, every command
-degrades to a harmless default instead of failing (`is_available` reports `false`, writes
-are silent no-ops).
-
-From JS, use [**`@drincs/roves-api/steam`**](../roves-api) — a full Steamworks wrapper
-(achievements, stats, DLC, overlay, store) talking to `steam:` directly. See the "`steam:`
-protocol bridge" entry in [CUSTOMIZATIONS.md] for how the Rust side is wired up.
-
-You don't need to build this yourself just to get Steam support: every platform's published
-release (see "Getting started" below) also ships a prebuilt `_steam`-suffixed shell variant,
-which [Roves Packmaster](https://github.com/DRincs-Productions/roves-packmaster) can download and
-bundle your game into directly, App ID and all — no Rust/Python toolchain needed.
-
-### Save data
-
-[**`@drincs/roves-api/saves`**](../roves-api) is an async, origin-scoped key/value store for
-player save data (shaped like IndexedDB, backed by real files), talking to its own dedicated
-`saves:` protocol (`protocols/saves.rs`). Roves picks the on-disk location for you — a
-`saves/` folder next to the game when it's running portably, the OS cache directory when
-installed via `--msi`/`--dmg`/`--deb` (distinguished at runtime by a marker file the installer
-build writes, since nothing else tells those two cases apart) — and, when built with
-`--features steam` and a Steam client is running, transparently mirrors every write/delete to
-Steam Cloud — and `getMostRecent()` can tell which save is newest, Cloud-only saves included,
-without downloading anything. See the "Save-game storage API" entry in [CUSTOMIZATIONS.md] for
-the full design, and the [wiki](https://github.com/DRincs-Productions/roves-wiki) for player/game-dev-facing
-docs.
-
-Separately, letting a player export/import a save as a plain file (`<a download>` on a Blob,
-`<input type="file">`) works out of the box with no `roves-api` call needed — Roves intercepts
-both transparently on every platform (a native "Save As"/"Open" dialog on desktop, a
-player-visible folder and native document picker on Android/iOS). See the wiki's
-[Save-game storage](https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/integrations/saves.mdx)
-page for the pattern. Desktop also intercepts programmatic `anchor.click()` downloads and
-retains the original Blob before Servo can try to navigate to its opaque-origin `blob:` URL.
-
-## Getting started
-
-Prebuilt, versioned engine shell builds (no game content bundled — see below) are published
-on the [Releases page](https://github.com/DRincs-Productions/roves/releases) as a portable
-zip for Windows, macOS, and Linux, starting with `v0.1.0`. Each platform is published twice
-— the plain default build (`roves_shell_<platform>.zip`) and a Steam-enabled one
-(`roves_shell_<platform>_steam.zip`, see the "Steam" section above) — pick whichever your
-game needs. Grab one of those if you just want to try the shell; the rest of this section is
-for building from source instead (e.g. to bundle your own game's content, or to work on
-Roves itself).
-
-If you're iterating on your own game's content, though, you likely don't need any of this at
-all: the [Roves VS Code extension](https://marketplace.visualstudio.com/items?itemName=DRincs-Productions.roves-run)
-([source](https://github.com/DRincs-Productions/roves-vscode)) downloads a prebuilt shell for
-you and runs your already-built `dist/` folder directly from your editor, with no toolchain
-install and nothing added to your project — see the
-[wiki](https://github.com/DRincs-Productions/roves-wiki) for details.
-
-These are the same build steps as upstream Servo — Roves is a source-level fork, not a
-different build system. For deeper background, see the Servo Book's own [Getting the Code]
-and [Building Servo] pages; where this fork's behavior actually differs from what's
-described there, that's covered in [CUSTOMIZATIONS.md] instead.
-
-[Getting the Code]: https://book.servo.org/building/getting-the-code.html
-[Building Servo]: https://book.servo.org/building/building.html
-
-### macOS
-
-- Download and install [Xcode](https://developer.apple.com/xcode/) and [`brew`](https://brew.sh/).
-- Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- Install `rustup`: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- Restart your shell to make sure `cargo` is available
-- Install the other dependencies: `./mach bootstrap`
-- Build: `./mach build`
-- Package a runnable bundle: `./mach bundle` (add `--dmg` to wrap it in an installable disk
-  image instead of the default self-contained `play.app` — see "Portable vs. installable
-  packages" below)
-
-### Linux
-
-- Install `curl`:
-  - Arch: `sudo pacman -S --needed curl`
-  - Debian, Ubuntu: `sudo apt install curl`
-  - Fedora: `sudo dnf install curl`
-  - Gentoo: `sudo emerge net-misc/curl`
-- Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- Install `rustup`: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- Restart your shell to make sure `cargo` is available
-- Install the other dependencies: `./mach bootstrap`
-- Build: `./mach build`
-- Package a runnable bundle: `./mach bundle` (add `--deb` for an installable Debian/Ubuntu
-  package instead of the default self-contained `play` binary — see "Portable vs. installable
-  packages" below)
-
-### Windows
-
-- Download [`uv`](https://docs.astral.sh/uv/getting-started/installation/#standalone-installer), [`choco`](https://chocolatey.org/install#individual), and [`rustup`](https://win.rustup.rs/)
-  - Be sure to select *Quick install via the Visual Studio Community installer*
-- In the Visual Studio Installer, ensure the following components are installed:
-  - **Windows 10/11 SDK (anything >= 10.0.19041.0)** (`Microsoft.VisualStudio.Component.Windows{10, 11}SDK.{>=19041}`)
-  - **MSVC v143 - VS 2022 C++ x64/x86 build tools (Latest)** (`Microsoft.VisualStudio.Component.VC.Tools.x86.x64`)
-  - **C++ ATL for latest v143 build tools (x86 & x64)** (`Microsoft.VisualStudio.Component.VC.ATL`)
-- Restart your shell to make sure `cargo` is available
-- Install the other dependencies: `.\mach bootstrap`
-- Build: `.\mach build`
-- Package a runnable bundle: `.\mach bundle` (add `--msi` for an installable Windows package
-  instead of the default self-contained `play.exe` — see "Portable vs. installable packages"
-  below; requires the WiX Toolset's `candle`/`light` on `PATH`)
-
-## Portable vs. installable packages
-
-By default, on every platform, `./mach bundle` produces a **portable** bundle — something a
-player downloads, unzips, and runs directly, no install step, no admin/root privileges. Each
-platform also has an **installable** package alternative, matching the shape of what a
-bundler like [Tauri]'s own bundler offers (`msi`/`nsis` on Windows, `dmg`/`app` on macOS,
-`deb`/`rpm`/`appimage` on Linux) — Roves supports one format per platform today, the ones
-with existing, reusable packaging logic in this fork's Servo lineage (`./mach package`'s own
-WiX/`hdiutil` code, see [CUSTOMIZATIONS.md]):
-
-| Platform | Portable (default) | Installable |
-| --- | --- | --- |
-| Windows | `play.exe` + a few DLLs, GStreamer plugins in `lib/` | `--msi`: a real `.msi`, via WiX |
-| macOS | `play.app` | `--dmg`: that same `.app`, wrapped in a `.dmg` disk image |
-| Linux | `play` + `.so` deps, flat | `--deb`: a real, installable `.deb` |
-
-An installable package always *wraps* the exact same content the portable bundle would have
-had (same `--content-dir`, same packing settings) — it isn't a second, different build.
-`--package-name`/`--package-version` (defaults `roves`/`0.0.0`) name and version whichever
-one you asked for; nothing else about `./mach bundle`'s other flags changes based on
-portable-vs-installable. `nsis`/`rpm`/`appimage` aren't implemented yet — see
-[CUSTOMIZATIONS.md] if you're adding one.
-
-This repo's own smoke-test CI, [`.github/workflows/test.yml`], exercises both variants on
-every platform on every push (a `package_mode` matrix axis of `portable`/`msi`/`dmg`/`deb`,
-one job per platform per mode) — not a manual toggle, since its whole job is proving `mach
-bundle` still works in every mode it supports, not just the default. It doesn't stop at a
-successful build either: after assembling each bundle, it actually launches the resulting
-binary for a few seconds and fails the job if the process doesn't stay up — a plain build
-success was once mistaken for "the bundle works," which cost real debugging time (see
-[CUSTOMIZATIONS.md]'s launch.json entries) before this check existed. If you're building your
-own release pipeline around `mach bundle` (or `roves-action`, see below), pick whichever
-mode(s) you actually want to ship, the same way that workflow's per-mode `BUNDLE_ARGS` do.
-The Steam emulator job also waits up to 60 seconds for the page's end-to-end result marker,
-so Xvfb startup time does not consume the page-load window.
-
-### Diagnosing a launch that appears to do nothing
-
-The development panic handler writes the message, thread and source location to `roves.log`
-before hard-fail termination, so that exit path preserves its cause.
-
-`mach bundle --diagnostic-script` ships a `diagnose.bat` (Windows) / `diagnose.sh`
-(macOS/Linux) next to the game binary — in the installable packages too, not just the
-portable one (not `--deb`, where a terminal already shows the same output directly). Running
-it instead of the game launches the same binary from a console that stays open afterward,
-printing the exit code and the newest `roves.log`'s contents inline, so a tester who hits "I
-double-clicked it and nothing happened" can just run this and paste the result into a bug
-report. Off by default — a real release has no reason to carry debug tooling players never
-asked for. See the wiki's [Diagnosing a silent launch] page for the full story (`roves.log`'s
-location per platform, and a real incident this was built to catch).
-
-[Diagnosing a silent launch]: https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/distribution/diagnosing-a-silent-launch.mdx
-
-[`.github/workflows/test.yml`]: .github/workflows/test.yml
-
-### Repeatable performance fixtures
-
-Roves [v0.7.13](https://github.com/DRincs-Productions/roves/releases/tag/v0.7.13) delegates
-global intrinsic lookup to V8 and handles exceptions without source locations safely.
-The verified release passes DOM/iframe, worker FIFO/timer and visible typewriter/Pixi probes.
-
-The v0.7.13 consumer CI passes on all platforms. Updated visible Chrome/Roves reference
-measurements and their limits are recorded in [the performance notes](docs/ROVES_PERFORMANCE.md).
-
-The bundled diagnostic page also exposes deliberately minimal comparison workloads through
-`?perf=blank`, `?perf=pixi-static`, and `?perf=pixi-animated`. Run the same built page, window
-size, warm-up and sampling interval in Roves and Chrome. The static PixiJS fixture renders one
-frame and stops its ticker; unlike the normal diagnostic page, these fixtures omit gamepad
-polling, FPS probes, Steam checks and other page-level timers that would contaminate an idle
-measurement. The entry point loads the normal diagnostic panels lazily, so performance
-fixtures also avoid their module side effects, including Tone.js initialization. Rebaseline both
-browsers after this fixture correction; it is not an engine speedup. The measurement plan and current findings are tracked in
-[`ROVES_PERFORMANCE.md`](./docs/ROVES_PERFORMANCE.md).
-
-Roves [v0.7.12](https://github.com/DRincs-Productions/roves/releases/tag/v0.7.12) caches actual WebGL drawing-buffer dimensions between resizes
-to avoid repeated synchronous thread queries. Isolated getter benchmarks show lower latency;
-the effect on whole-game CPU still needs measurement.
-Pixi comparison fixtures explicitly select WebGL and disable their FPS polling timer.
-It also delegates Web Audio frequency analysis to RealFFT/RustFFT,
-replacing the quadratic direct transform while preserving Web Audio scaling and smoothing.
-The analyser transport uses Crossbeam's bounded queue to retain the latest audio
-window without per-block DOM tasks; whole-game CPU savings remain to be measured.
-An isolated debug/headless test with eight unread analyzers measured about 43% lower process
-CPU, with about 1.2 MiB more private memory; conditions and variability are in the performance notes.
-Worker lifecycle diagnostics also check that terminating idle workers releases their threads;
-the release fix wakes the existing Crossbeam event loop. Three repeated CI-artifact
-runtime cycles release all four worker threads, with no progressive private-memory growth
-observed in those cycles. The FIFO/timer regression probe also passes. No scheduler is added.
-The release structured-clone bridge also moves V8's serialized byte vector through Rust
-ownership instead of copying it twice; full ArrayBuffer transfer still has separate payload
-copies. In an alternating optimized-build benchmark, median 4 MiB round-trip latency falls
-from 5.72 to 3.88 ms for cloning and 6.37 to 4.15 ms for transfer. These are API timings,
-not whole-game CPU savings; the Chrome transfer reference remains about 0.10 ms.
-Worker OffscreenCanvas WebGL rendering is not yet supported; the canvas capability probe
-distinguishes this from working OffscreenCanvas contexts on the DOM thread.
-The v0.7.13 release removes redundant standard-class hooks from worker globals,
-delegating intrinsic lookups to V8. All desktop/V8 CI checks and the downloaded runtime pass;
-the fixed-work direct-lookup probe takes 93 ms in the new debug build, versus 8551 ms in the
-previous optimized build. This diagnostic comparison is not a matched-profile CPU percentage.
-It uses V8 native data properties for Window's lazy interfaces, with 39 engine-layer tests
-passing, including cross-global ownership, exception recovery and missing source locations.
-The large worker probe scales from about 8.4 s with one worker to 1.1 s with eight on this machine;
-total process CPU remains about 11 core-seconds and observed private memory rises from 174 to 250 MiB.
-These headless arithmetic probes do not establish game frame pacing or CPU parity.
-Animation comparison fixtures omit FPS polling; the Three.js panel releases its scene
-resources and canvas when unmounted.
-Downloaded CI builds pass the numerical and WebGL resize/readback checks; results and scope are in
-[`ROVES_PERFORMANCE.md`](./docs/ROVES_PERFORMANCE.md). These measurements do not establish whole-game parity with Chrome.
-
-Windows uses mimalloc by default; `--features system-allocator` selects the system allocator.
-`./mach build --features mimalloc` forces mimalloc on other targets (normally jemalloc there).
-The `perf-ab.yml`
-workflow publishes Windows release builds of both to the `perf-ab` pre-release.
-
-For shell-side counts, launch a desktop build with `ROVES_PERF_LOG_INTERVAL_MS=10000` (or another
-positive interval). The normal `roves.log` then receives aggregate `[roves-perf]` lines for SDL
-events/timeouts, redraw requests and coalescing, WebView paints, and final window presents, plus
-`[roves-perf-time]` lines with total/max microseconds spent in WebView paint, egui update, shell
-paint and window present. The diagnostic is disabled by default and does not create a sampling
-timer or background thread.
-
-Desktop builds present a full-window game directly (fast path A): with no dialog, status
-overlay, egui focus, active AccessKit or pending egui textures, the shell skips egui tessellation
-and paint and only blits Servo's off-screen frame; any other frame uses the composed path. Watch
-`direct_presents` with `ROVES_PERF_LOG_INTERVAL_MS=1000`; see
-[the rendering plan](./docs/FAST_PATH_RENDERING.md).
-
-Compiled graphics shaders are cached per game on disk, so later launches skip shader-compile stalls.
-
-When the window is minimized or fully covered, the page becomes `document.hidden` (a
-`visibilitychange` event fires) and is throttled, as in Chrome, so games can pause their music.
-
-Images, audio and other files a game downloads over http(s) are kept in a per-game disk cache
-and reused on later launches while the server marks them fresh.
-
-On Windows laptops with two GPUs, the shell asks NVIDIA Optimus and AMD switchable graphics for
-the discrete GPU. WebXR is not built into the shell.
-
-[Tauri]: https://v2.tauri.app/distribute/
-
-## Relationship to upstream Servo
-
-Roves tracks a pinned upstream Servo release plus a small set of targeted patches — see
-[CUSTOMIZATIONS.md] for the itemized list, and [AGENTS.md](./AGENTS.md) for how upgrades to
-a newer Servo release are meant to happen. All credit for the underlying engine goes to the
-[Servo Project](https://github.com/servo/servo) and its contributors; issues specific to
-this fork's own customizations should stay local to this repository rather than upstream.
-The SDL3 virtual gamepad CI probe and remaining hardware checks are documented in
-[`SDL3_WINDOWING_TESTING.md`](./SDL3_WINDOWING_TESTING.md). On macOS, gamepad support is off by
-default and can be tried experimentally by launching with `ROVES_MACOS_GAMEPAD=1`; the test
-page's Input section shows every key, mouse button and gamepad event the page receives.
-
-Retired V8 foreground handlers release captured embedder data outside the registry lock,
-so a destructor can reenter registration safely (covered by normal/JITless backend tests).
-
-Unregistering a V8 runtime also destroys its delayed engine tasks still waiting in the timer
-(such as `Atomics.waitAsync` timeouts) before the isolate goes away, instead of leaking them.
-Unregistering also waits for engine tasks already being handed to the runtime from other
-threads, so they are destroyed before the isolate goes away too instead of being dropped
-silently after shutdown.
-
-`Object.defineProperty` with a partial descriptor (such as `{ writable: false }` or only a
-getter) on DOM objects with named properties and on `window` now changes only the given
-fields, as in other browsers, instead of ignoring `writable` or clearing the other accessor.
-Reading property descriptors of such DOM objects (`Object.getOwnPropertyDescriptor`,
-`Object.keys`) also keeps working when page code adds `get`, `set` or other descriptor fields to
-`Object.prototype`, instead of throwing "Invalid property descriptor".
-
-Code that calls into another same-origin window (for example a parent page calling a function
-defined in an iframe) now reports the window whose code is running as its caller, as browsers
-do, and callbacks run by the engine no longer see the script that registered them as the caller.
-`FinalizationRegistry` cleanup callbacks can call page APIs such as `drawImage` on V8 without
-crashing the page's script thread.
-An object reachable only through a `WeakRef` can now be collected once the current task and its
-microtasks finish, as in browsers, even if no promise ran in between (see the shell wiki page).
-Promise and `queueMicrotask` callbacks now run in the order they were queued, as in browsers,
-instead of all pending promise callbacks first (see the shell wiki page); dedicated workers use
-the same order, now covered by an automated browser check.
-The unused Servo Promise-enqueue callback and its internal WebIDL adapter have been removed;
-V8 owns Promise jobs directly (see the shell wiki page).
-The CI runner fixtures also enforce mandatory browser checks on POSIX; missing worker checks
-remain failures (see the shell wiki page).
-`postMessage`/`structuredClone` of a `SharedArrayBuffer` or `WebAssembly.Module` fails with a
-`DataCloneError` on V8, as it did on SpiderMonkey, instead of failing silently or with a generic error.
-
-A reference to a window (`iframe.contentWindow`, `window.opener`, a popup from `window.open`)
-stays the same object when that window navigates to another page served by the same script
-thread, as in browsers. Going back or forward in history therefore reloads the page instead of
-resuming it from memory (`session_history_max_length` defaults to 0).
-
-Historical V8 migration evidence is archived in [docs/V8_MIGRATION.md](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md).
-The Linux GC smoke entry point is fixed and verified in normal/JITless browser CI, with
-a lightweight entry-sequence regression.
-Removed-frame collection remains diagnostic, not a completed page-retention guarantee.
-
-The agent workflow runs a continuous implementation/review/CI loop, keeping commits local while the preceding CI batch is active.
-It checks Claude `/usage` after a session limit and schedules one retry at the reported reset plus two minutes;
-see [docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md).
-
-The current Linux frame-retention smoke releases its iframe element, document and probe
-after eight collections; additive-listener GC controls pass in normal and JITless modes.
-Inline-handler GC controls also pass in normal and JITless CI. This verifies those scenes,
-not a universal page-retention guarantee.
-
-During the current V8 migration, macOS/iOS CI results are excluded from the publication
-gate by user instruction; missing Apple checks remain unverified. Linux, Windows,
-Android and shared checks still gate publication.
-
-Scoped-handler source-text compatibility remains open. Native normal/JITless proofs show
-that ordinary V8 properties preserve external accessor receivers, but DOM key ordering and
-generated hook compatibility need further gates. No experimental DOM backend was adopted.
-Named-property reads now honor LegacyOverrideBuiltIns for Document (including its
-inherited XMLDocument binding) and dataset:
-supported names take precedence over prototype properties, while own/unforgeable properties
-still win. For example, data-to-string makes element.dataset.toString return the attribute
-value; removing the attribute restores the inherited method. Browser confirmation is in CI.
-This fixes read visibility; definition/deletion/enumeration and source-text gaps remain open.
-
-Documentation patch paths now use portable separators, fixing Linux reconstruction
-of the migration handoff series; runtime behavior is unchanged.
-
-Dynamic DOM named-property enumeration preserves embedded NUL and Unicode names without
-C-string conversion or permanently pinning their atoms. Normal/JITless native regressions
-pass; the required browser smoke runs in CI and is pending for this change. Overall page
-retention remains open.
-
-Named own-key enumeration excludes names hidden by prototypes or own/unforgeable properties,
-including null prototypes and reentrant expando creation. Own properties short-circuit prototype
-queries. This correction targets the actual Document reflector. Window.HTMLDocument now uses the
-standard alias of Document through existing WebIDL generation; the unused subclass is removed.
-Constructor/prototype identity and property attributes have required browser regressions;
-normal/JITless browser checks passed in the dac65 CI batch.
-
-Indexed DOM collections keep array-index keys separate from numeric named keys, preventing
-duplicate native ownKeys results. Noncanonical numeric names and numeric names on Document
-remain available. Native regressions and required Windows/Linux browser CI passed.
-
-Visible named DOM properties without a named deleter now reject deletion according to
-WebIDL, while own expandos and Dataset retain their ordinary/deleter behavior. Form delete
-support checks do not register a named read or keep a renamed control in its past-names map.
-Required Windows/Linux browser verification passed in the735a batch. Visible Chrome156 differs
-on these deletions and exposes a distinct HTMLDocument constructor; Roves follows the
-normative expectations here, so this is not a claim of Chrome parity. Indexed deletion,
-property definition, prototype-query conformance, inline-handler source text and overall
-retention remain under migration.
-
-Named-property visibility now reuses V8-backed descriptor traversal rather than a Proxy
-`has` query on prototypes. Accessor getters are not invoked by this presence check; native
-normal/JITless tests and required browser fixtures passed in the0eb CI batch. This is a bounded
-correction, not complete WebIDL conformance.
-
-Roves keeps its Servo shell while replacing internal services with maintained libraries
-where that removes duplicate implementation. The embedded `servoshell` target uses V8
-through `roves-js`/`roves-v8` and `deno_core` unconditionally; there is no SpiderMonkey
-runtime fallback. The lockfile contains one V8 version. Normal/JITless CI and the remaining
-lifecycle checks still gate a final release. DOM/layout/rendering stay in Servo. No separate
-Chromium or Deno installation is needed.
-
-The product direction is one Servo-shell window and one game document, with internal
-routes such as TanStack Router using the History API and fragments. Additional tabs/windows
-and iframes are not required. Game-driven reloads and full-document navigations are outside
-this scope. The implemented engine policy blocks unsupported attempts before replacing the
-document and emits a useful console/log warning, without crashing or opening a blocking
-alert. Repeated attempts are limited to avoid log floods. The confirmed behavior is a discreet
-non-modal notice in development and logs only in distributed games. External links may open
-the system browser only after a real user click; automatic attempts are blocked and logged,
-without navigating inside Roves. Initial shell loading/shutdown remain lifecycle requirements.
-The source integration follows the single-document scope; browser validation remains required.
-
-The local source integration uses deno_core with the existing Servo DOM, layout and shell,
-one V8 version and a shared module map. It is not yet a verified release: cross-platform
-Rust and browser CI must pass before using a built artifact.
-
-Games keep one document: History/hash routes remain available; full navigation, reload,
-iframes and auxiliary windows are refused. Development launches show a non-modal notice;
-bundled games log the refusal. External HTTP(S) anchor/area links require a native trusted
-click and use SDL's system URL handler; synthetic/automatic requests are blocked. The Windows
-fixture verified notice rendering and real-click OS handoff. Closing the OS window during a
-pending static fetch still needs an end-to-end check.
-
-Three provisional differences are tracked: static module loading now yields between network
-responses and already-ready sources, while each source compilation, resolution and final linking
-remain synchronous and may pause input/timers; static evaluation errors arrive via
-unhandledrejection; inline module URLs
-include a distinct #roves-inline-module-N fragment. Dynamic imports stay asynchronous,
-relative asset bases remain correct, and external module URLs are unchanged. The new
-timer-probe smoke and Rust integration tests still need CI; responsiveness on real scenes
-and acceptable latency have not been established.
-
-JSON modulepreload is temporarily unavailable: it warns once and queues a link error,
-without reporting a false load or interrupting the game. Typed JSON imports remain supported;
-imports without type json must reject. Restoration is an optimization backlog item in
-TODO.md with policy, cache and performance acceptance criteria.
-
-A reproduced Function-constructor import-referrer bug requires V8's public
---no-compilation-cache guard; Deno's module cache stays active. Startup/compilation costs
-remain unmeasured. Internal Deno/Node module namespaces are denied before cache lookup.
-Native memory and long sessions remain open in TODO.md, alongside SourceText.
-
-The isolated probe previously passed Linux/Windows normal/JITless; it is not proof of this
-complete Servo integration. Historical checks and publication status are in
-the [migration handoff](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md). Contributor quota restarts follow AGENTS:
-one verified-reset retry, saved handoff, no periodic polling or chained attempts.
-
-The first integration CI identified two compiler errors and stale Linux runner simulations;
-corrections include failure-log artifacts and redirect/MIME/referrer/SRI browser checks.
-Their browser execution remains pending the next successful CI batch.
-
-Smoke runtime logs are retained per fresh process for provisional static-load pause review;
-isolated CI caches represent cold scenes, not a complete latency or memory benchmark.
-
-The integrated build now compiles; Linux smoke and packaged launches exposed a document
-initialization ordering panic. Loader installation moves after document attachment;
-browser startup and module behavior still require successful CI with this correction.
-
-Disposable V8 smoke processes use Servo hard-fail mode so native thread panics cannot
-leave blank windows running until each page timeout. This does not change packaged games.
-
-Static-load diagnostics require complete cold/warm/controlled-slow timer and frame reports,
-without imposing a latency threshold. The Chrome MCP reference and its measurement limits
-are recorded in docs/ROVES_PERFORMANCE.md; Roves comparison remains pending browser CI.
-
-Static import-attribute errors preserve TypeError through Deno public error conversion;
-parse failures retain SyntaxError. Native module checks pass in normal and JITless modes;
-the corresponding browser fixture remains subject to CI.
-
-Module error reports retain Deno source URLs, coordinates and formatted stacks through
-error-owned metadata. The separate inline HTML line offset remains an open diagnostic gap.
-
-SRI module loading retains body chunks received before metadata; final security checks
-remain mandatory. The correction awaits browser CI confirmation.
-
-The32d4 required CI batch is green, including Linux module19/19 normal/JITless and
-Windows/Linux bundles. Windows module runtime coverage now reuses the same smoke runner
-in both modes; its new CI execution is pending. Manual shell checks and inline HTML source
-offsets remain open, along with the separate retention/SourceText investigation.
-
-Native shutdown coverage includes pending network imports and late success/failure replies
-in both modes. It does not establish graceful window shutdown during a blocking static fetch.
-
-Cached-import coverage verifies namespace identity and single fetch/evaluation without
-blind native event-loop polling; the new twentieth browser contract awaits its own CI.
-
-Windows V8 browser CI stages the Cargo-built ANGLE DLLs through the same helper as mach
-before launching; a missing EGL/GLES library fails preparation explicitly. No bundle option changes.
-
-Inline HTML diagnostics now use Deno's public source-map fallback and the maintained
-sourcemap codec, preserving document rows and existing embedded maps without rewriting
-JavaScript. Native normal/JITless suites pass; the new required browser check (21 total)
-awaits CI. This does not close the separate retention or manual shell verification work.
-
-The Windows browser jobs now start correctly. Smoke fixture JavaScript/JSON MIME types are
-explicitly defined through Python's standard server extension map, preventing host registry
-associations from serving .mjs as text/plain. The deliberate wrong-MIME rejection remains.
-The actual browser result still awaits corrected CI; Linux and native checks are green.
-
-The dd653 required CI batch is green, including the 21-check module contract fixture in
-Linux/Windows normal and JITless browser jobs, Android, packaging and patch replay. This
-confirms inline HTML diagnostics and the Windows ANGLE/MIME test infrastructure fixes.
-Manual shell verification, provisional static-load pauses and overall retention remain open.
-
-Module smoke coverage now also records initial static loading separately from modules
-inserted at runtime (22 required checks). Validated startup/timer observations are retained
-in CI summaries without a performance threshold. The preceding6992 CI batch is green;
-new startup coverage awaits its own CI. No action input or bundle format changes.
-
-A stricter lifecycle investigation found an outstanding deno_core0.413 correctness gap:
-importing a module already under static top-level await can settle too early, including
-an async descendant. The prior green CI did not cover this case. The partial evaluation
-prototype was rejected; no production fork or workaround is shipped. See the migration
-handoff0424. Host-loader release under pending TLA is independently tested in both modes.
-
-Inline diagnostic mapping reuses deno_core's public sourcemap re-export, removing a duplicate
-direct version pin while retaining the same transitive codec. Native normal/JITless mapping
-checks pass. The cached-static-TLA correctness gap remains open; its proposed library patch
-has not been adopted.
-
-The game-blocking cached-static-TLA bug now has an authorized temporary deno_core0.413
-snapshot with the minimal async-graph guard, preserved MIT license and removal TODO.
-Upstream: [issue37097](https://github.com/denoland/deno/issues/37097),
-[draft PR37098](https://github.com/denoland/deno/pull/37098). Native suites pass117 normal/
-116 JITless. Browser coverage now requires23 module checks; integrated CI is still needed.
-CI --build checks propagate Cargo failures, preventing use of a stale cached binary.
-No action inputs, bundle format or privileged game APIs are introduced.
-
-La regressione0430 verifica che un fetch statico sospeso non esegua job JavaScript già
-accodati mentre il runtime è occupato:118 test normali e117 JITless verdi, con controllo
-negativo. Il batch precedente conferma23/23 controlli dei moduli nel browser Servo su
-Linux/Windows normale/JITless. Le prove desktop e la retention complessiva restano aperte.
-
-La verifica0432 dello snapshot CI conferma il rilascio del ciclo DOM/listener rimosso nella
-scena documento unico, preservando il controllo connesso. È una prova circoscritta,
-non una dichiarazione di retention complessivamente risolta; dati in ROVES_PERFORMANCE.
-
-Decisione29ottobre2026: compatibilita SourceText degli handler e preload JSON sono nel
-TODO, fuori dai criteri di completamento della migrazione V8. Non risultano implementati;
-gli handler ordinari e gli import JSON con type json restano utilizzabili.
+## Repository layout
+
+| Path | What it is |
+| --- | --- |
+| `support/cef-windows-player`, `support/cef-macos-gate`, `support/cef-linux-gate` | The three players (separate Cargo workspaces) |
+| `support/cef-host-api-tests` | CEF-free unit tests of the loopback server, host API and shared rules |
+| `support/vendor/wgpu-weld` | Temporary fork of wgpu-weld (software-paint fallback, navigation veto); see its `ROVES_PATCHES.md` |
+| `support/sdl3-gamepad-probe` | SDL3 virtual-gamepad probe (manual workflow) |
+| `skills/` | Agent skills |
+| `test-page/` | A web page exercising Web APIs inside the player |
+| `roves-action`, `roves-cli`, `roves-packmaster`, `roves-api`, `roves-vscode`, `roves-wiki` | The ecosystem's other repositories, as submodules |
+
+[`CUSTOMIZATIONS.md`](CUSTOMIZATIONS.md) is the changelog of every significant change and its
+reason; [`TODO.md`](TODO.md) is the open backlog; [`AGENTS.md`](AGENTS.md) holds the rules for
+coding agents. Heavy builds run in CI; [`docs/ROVES_PERFORMANCE.md`](docs/ROVES_PERFORMANCE.md)
+describes how performance is measured against Chrome.
+
+## History
+
+Roves (an anagram of *Servo*) began as a customized copy of the [Servo](https://servo.org/)
+web engine, later running its JavaScript on V8 instead of SpiderMonkey. On 2026-11-23 the
+desktop product moved to the CEF player and the Servo and V8 sources were removed from `main`;
+`v0.7.15` is the last Servo-based release and still serves the mobile builds. A Blitz/Deno
+engine and a Netrender compositor were also evaluated and dropped. The git history and
+`CUSTOMIZATIONS.md` keep the details.
+
+## License
+
+[Mozilla Public License 2.0](LICENSE). Bundled third-party components (CEF/Chromium, SDL3,
+wgpu, wgpu-weld, the Steamworks redistributable) keep their own licenses.

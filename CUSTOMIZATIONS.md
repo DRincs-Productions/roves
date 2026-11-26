@@ -1,3 +1,14 @@
+## 2026-11-26 - README rewritten for the CEF player; Blitz backlog removed
+
+Changed: `README.md`, `TODO.md`.
+Why: user decision. The README (917 lines) still described the Servo engine, `mach`, a branch
+note and the V8 runtime, none of which exist on `main` since 2026-11-23; it now describes the
+CEF desktop player, its variants, the mobile builds at `v0.7.15`, releases, skills, the
+repository layout and a short history. `TODO.md` loses the "Servo -> Blitz con Deno/V8"
+section (the Blitz probe was removed) and the MCP-in-consumers item (done: Action
+`enable-mcp`, Packmaster's MCP option); its introduction no longer speaks of a Servo fork or
+patch regeneration.
+
 ## 2026-11-26 - Windows player renamed; window probe, Steamworks gate and perf benches removed
 
 Changed: `support/cef-netrender-probe` -> `support/cef-windows-player` (crate and executable
