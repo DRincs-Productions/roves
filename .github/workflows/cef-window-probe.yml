@@ -9,6 +9,8 @@ name: 'Test: CEF window probe (stage 1)'
 
 on:
   push:
+    # Branches only: path filters are ignored on tag pushes, so a release tag would run it.
+    branches: ['**']
     paths:
       - 'support/cef-window-probe/**'
       - '.github/workflows/cef-window-probe.yml'
