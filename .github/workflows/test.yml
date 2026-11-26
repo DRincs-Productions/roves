@@ -15,10 +15,8 @@ name: 'SDL3 gamepad checks'
 # versioned-tag workflow, so the macOS leg of the probe does not run here.
 
 on:
-  push:
-    paths:
-      - 'support/sdl3-gamepad-probe/**'
-      - '.github/workflows/test.yml'
+  # No push trigger (user 2026-11-26): this old SDL3 probe runs macOS/Linux jobs, which now
+  # run only at release time; dispatch it by hand when needed.
   workflow_dispatch: {}
 
 # A new SDL3 checkpoint supersedes the previous one, so only the latest commit's checks run.

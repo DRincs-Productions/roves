@@ -17,10 +17,8 @@ name: Netrender shared-device proof
 # violation inside d3d10warp.dll while executing Vello's compute frame, also
 # with a plain wgpu device and no bridge (README "WARP").
 'on':
-  push:
-    paths:
-      - 'support/netrender-shared-device-proof/**'
-      - '.github/workflows/netrender-proof.yml'
+  # No push trigger (user 2026-11-26): this old proof runs macOS/Linux jobs, which now run
+  # only at release time; dispatch it by hand when needed.
   workflow_dispatch:
 
 concurrency:

@@ -15,10 +15,8 @@ name: Steamworks feasibility gate
 # touches no other workflow or the CEF player.
 
 on:
-  push:
-    paths:
-      - 'support/steamworks-gate/**'
-      - '.github/workflows/steamworks-gate.yml'
+  # No push trigger (user 2026-11-26): this old feasibility gate runs macOS/Linux jobs, which
+  # now run only at release time; dispatch it by hand when needed.
   workflow_dispatch:
 
 concurrency:

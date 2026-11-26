@@ -1,3 +1,13 @@
+## 2026-11-26 - CI: macOS and Linux only at release time
+
+Changed: `.github/workflows/{cef-linux-gate,cef-macos-gate,steamworks-gate,test,netrender-proof}.yml`,
+`AGENTS.md`.
+Why: user decision. The macOS and Linux player gates no longer run on push; they run when a
+`v*.*.*` tag is created (release.yml calls them through `workflow_call`), on a
+`release-check/**` dry run, or by manual dispatch. The old feasibility workflows with
+macOS/Linux matrix jobs (Steamworks gate, SDL3 probe, Netrender proof) are dispatch-only,
+which also stops a release tag from triggering them. Commit CI is Windows only.
+
 ## 2026-11-26 - CEF Linux player: browser created after its profile is initialized
 
 Changed: `support/vendor/wgpu-weld/welding/src/{profile.rs,linux_cef/mod.rs}`,

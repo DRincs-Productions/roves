@@ -32,54 +32,10 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 Linux feasibility gate
 # its three archived packages become the Linux release assets.
 
 on:
-  push:
-    # Branches only: a tag push runs this workflow through release.yml, not a second time here
-    # (path filters are not evaluated for tag pushes).
-    branches: ['**', '!release-check/**']
-    paths:
-      - 'support/cef-linux-gate/**'
-      # Vendored welding (temporary fork, ROVES_PATCHES.md).
-      - 'support/vendor/wgpu-weld/**'
-      # Compiled into the gate through `#[path]` (packaged-game mode).
-      - 'support/cef-window-probe/src/server.rs'
-      - 'support/cef-window-probe/src/host_api.rs'
-      # The Windows player's pure rules (origin, load status, profile name/files), `#[path]`.
-      - 'support/cef-netrender-probe/src/game_rules.rs'
-      # The players' single-document navigation policy and external-link rule (`#[path]`).
-      - 'support/cef-netrender-probe/src/external_link.rs'
-      # The macOS gate's profile glue (lock, stored origin port), `#[path]`.
-      - 'support/cef-macos-gate/src/profile.rs'
-      # The players' shared page input, page-marker registration (+ its marker script) and
-      # window icon (`#[path]`), and the embedded Roves logo.
-      - 'support/cef-netrender-probe/src/input.rs'
-      - 'support/cef-netrender-probe/src/page_init.rs'
-      - 'support/cef-netrender-probe/src/mcp_rules.rs'
-      # The optional local MCP bridge (`#[path]`) and its Node server, smoke test and fixture.
-      - 'support/cef-netrender-probe/src/mcp.rs'
-      - 'support/cef-netrender-probe/mcp/**'
-      - 'support/cef-netrender-probe/src/icon_rules.rs'
-      - 'support/cef-netrender-probe/src/window_icon.rs'
-      - 'icon.png'
-      # The macOS gate's session glue and key codes (`#[path]`).
-      - 'support/cef-macos-gate/src/session.rs'
-      - 'support/cef-macos-gate/src/keys.rs'
-      - 'support/cef-macos-gate/src/key_rules.rs'
-      # The player fixture (page marker, saves, input, audio).
-      - 'support/cef-macos-gate/player-fixture/**'
-      # Startup screen (the macOS gate's module, the Windows player's splash.rs branding,
-      # build.rs wordmark and its font) and the `steam` feature (the macOS gate's Steamworks
-      # lifetime and redistributable lookup, the Windows player's client and host API fixture).
-      - 'support/cef-macos-gate/src/startup_screen.rs'
-      - 'support/cef-macos-gate/src/player_steam.rs'
-      - 'support/cef-macos-gate/src/steam_lib.rs'
-      - 'support/cef-netrender-probe/src/splash.rs'
-      - 'support/cef-netrender-probe/build_wordmark.rs'
-      - 'resources/fonts/MetalMania-Regular.ttf'
-      - 'support/cef-netrender-probe/src/steam.rs'
-      - 'support/cef-netrender-probe/host-api-fixture/**'
-      - '.github/workflows/cef-linux-gate.yml'
+  # No push trigger (user 2026-11-26): Linux and macOS CI run only when a release tag is
+  # created (release.yml, workflow_call) or by hand. Day-to-day CI is Windows only.
   workflow_dispatch:
-  # release.yml (no inputs: a release runs exactly the checks of a push).
+  # release.yml (no inputs: a release runs the full set of checks).
   workflow_call:
 
 concurrency:

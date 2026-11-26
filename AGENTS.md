@@ -239,7 +239,7 @@ prima di passare al controllo della CI e alla decisione di pubblicare.
 
 ### Gate CI Apple aggiornato (5 novembre 2026)
 
-Dal player CEF (v0.9.0) release.yml chiama sul tag i tre workflow dei player, incluso il gate macOS arm64 (Metal, pacchetto standard e Steam), prima di pubblicare. Android e iOS restano sul motore Servo al tag v0.7.15 e non fanno parte di questo rilascio.
+Dal player CEF (v0.9.0) release.yml chiama sul tag i tre workflow dei player, incluso il gate macOS arm64 (Metal, pacchetto standard e Steam), prima di pubblicare. Android e iOS restano sul motore Servo al tag v0.7.15 e non fanno parte di questo rilascio. Dal 26 novembre 2026 (scelta dell'utente) i workflow macOS e Linux non partono più a ogni push: girano solo alla creazione di un tag di rilascio (release.yml) o a mano. La CI ordinaria sui commit è solo Windows; non riattivare trigger push per macOS/Linux.
 
 ### Procedura di implementazione: loop autonomo
 

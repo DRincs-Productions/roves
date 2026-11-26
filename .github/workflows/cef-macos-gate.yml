@@ -25,41 +25,10 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 macOS feasibility gate
 # build and checks, and its three zipped .app artifacts become the macOS release assets.
 
 on:
-  push:
-    # Branches only: a tag push runs this workflow through release.yml, not a second time here
-    # (path filters are not evaluated for tag pushes).
-    branches: ['**', '!release-check/**']
-    paths:
-      - 'support/cef-macos-gate/**'
-      # Vendored welding (temporary fork, ROVES_PATCHES.md).
-      - 'support/vendor/wgpu-weld/**'
-      # Compiled into the gate through `#[path]` (packaged-game mode).
-      - 'support/cef-window-probe/src/server.rs'
-      - 'support/cef-window-probe/src/host_api.rs'
-      # The Windows player's pure rules (origin, load status, profile name/files), `#[path]`.
-      - 'support/cef-netrender-probe/src/game_rules.rs'
-      # The players' single-document navigation policy and external-link rule (`#[path]`).
-      - 'support/cef-netrender-probe/src/external_link.rs'
-      # The players' shared page input, page-marker registration (+ its marker script) and
-      # window icon (`#[path]`), and the embedded Roves logo.
-      - 'support/cef-netrender-probe/src/input.rs'
-      - 'support/cef-netrender-probe/src/page_init.rs'
-      - 'support/cef-netrender-probe/src/mcp_rules.rs'
-      # The optional local MCP bridge (`#[path]`) and its Node server, smoke test and fixture.
-      - 'support/cef-netrender-probe/src/mcp.rs'
-      - 'support/cef-netrender-probe/mcp/**'
-      - 'support/cef-netrender-probe/src/icon_rules.rs'
-      - 'support/cef-netrender-probe/src/window_icon.rs'
-      - 'icon.png'
-      # Startup screen branding (`#[path]` splash.rs, build.rs wordmark and its font) and the
-      # `steam` feature's Steamworks client (README "Startup screen", "Steam").
-      - 'support/cef-netrender-probe/src/splash.rs'
-      - 'support/cef-netrender-probe/build_wordmark.rs'
-      - 'resources/fonts/MetalMania-Regular.ttf'
-      - 'support/cef-netrender-probe/src/steam.rs'
-      - '.github/workflows/cef-macos-gate.yml'
+  # No push trigger (user 2026-11-26): Linux and macOS CI run only when a release tag is
+  # created (release.yml, workflow_call) or by hand. Day-to-day CI is Windows only.
   workflow_dispatch:
-  # release.yml (no inputs: a release runs exactly the checks of a push).
+  # release.yml (no inputs: a release runs the full set of checks).
   workflow_call:
 
 concurrency:
