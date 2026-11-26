@@ -55,6 +55,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      # Only the release scripts (.github/release/, e.g. shell_only_windows.py).
+      - name: checkout the release scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/release
       - name: download the Windows packages
         uses: actions/download-artifact@v4
         with:
@@ -97,8 +102,9 @@ jobs:
           macos_zip() { # <artifact zip> <asset>: delete the sample game's entries in place
             cp "$art/$1" "$out/$2"
             local app
-            app="$(unzip -Z1 "$out/$2" | grep -m1 -oE '^[^/]+\.app/')"
-            test -n "$app" || { echo "::error::$1 holds no .app"; exit 1; }
+            # No `grep -m1`: an early exit would kill unzip with SIGPIPE under pipefail.
+            app="$(unzip -Z1 "$out/$2" | grep -oE '^[^/]+\.app/' | sort -u)"
+            test -n "$app" && test "$(printf '%s\n' "$app" | wc -l)" = 1 || { echo "::error::$1 does not hold exactly one .app"; exit 1; }
             zip -q -d "$out/$2" "${app}Contents/Resources/game/*"
             # The sample game's window icon, when the package has one (exit 12: nothing matched).
             zip -q -d "$out/$2" "${app}Contents/Resources/icon.png" || [ $? -eq 12 ]

@@ -152,12 +152,11 @@ otherwise Chromium stops with "No usable sandbox!".
 roves android -c dist [options]
 ```
 
-Clones the engine at the mobile pin (`v0.7.15`, shallow, cached) unless `--engine-dir` points at
-an existing checkout, optionally runs `mach bootstrap`, then `mach bundle --android`. Nothing is
-compiled. Prerequisites (checked first, all problems listed at once): `git` (unless
-`--engine-dir`), [`uv`](https://docs.astral.sh/uv/), a JDK 17 (`java` or `JAVA_HOME`), and the
-Android SDK with `ANDROID_SDK_ROOT` or `ANDROID_HOME` set (platform-tools, `platforms;android-37`,
-`build-tools;36.0.0`). `rustup show` runs first when rustup is installed.
+Prepares the toolchain (see [Mobile toolchains](#mobile-toolchains-roves-setup)), clones the
+engine at the mobile pin (`v0.7.15`, shallow, cached; without git it downloads the tag's source
+archive) unless `--engine-dir` points at an existing checkout, optionally runs `mach bootstrap`,
+then `mach bundle --android`. Nothing is compiled. `rustup show` runs first when rustup is
+installed (`mach bundle` itself needs no Rust).
 
 | Option                                           | Meaning                                                                                                                                                   |
 | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -172,6 +171,7 @@ Android SDK with `ANDROID_SDK_ROOT` or `ANDROID_HOME` set (platform-tools, `plat
 | `--key-alias <alias>`                            | Key alias. Env: `ROVES_ANDROID_KEY_ALIAS`.                                                                                                                |
 | `--key-password <p>`                             | Key password. Env: `ROVES_ANDROID_KEY_PASSWORD`.                                                                                                          |
 | `--no-bootstrap`                                 | Skip `mach bootstrap` (you provisioned its dependencies). On Windows bootstrap runs with `--skip-platform`.                                               |
+| `--no-install`                                   | Do not install missing toolchains; fail listing them.                                                                                                     |
 | `-n, --name`, `-o, --out-dir`                    | Output folder `<out-dir>/<name>/` and `<out-dir>/<name>.zip`.                                                                                             |
 | `--engine-dir <dir>`                             | Existing engine checkout at `v0.7.15`.                                                                                                                    |
 | `--json`                                         | JSON result.                                                                                                                                              |
@@ -196,9 +196,10 @@ roves ios -c dist [options]
 Default: the engine's `support/ios/bundle.py` writes a ready-to-open project, XcodeGen
 generates `RovesGame.xcodeproj`, and an **unsigned iOS Simulator** `.app` is built and copied
 next to it. With `--release`: `mach bundle --ios --ios-release` archives and exports a signed
-`.ipa` (no raw `.xcodeproj`). Prerequisites: macOS, `python3`, Xcode (`xcodebuild`), XcodeGen
-(`brew install xcodegen`, default mode) or `uv` (release), and `git` unless `--engine-dir`.
-Icons are not supported yet (add them in Xcode).
+`.ipa` (no raw `.xcodeproj`). Requires macOS and Xcode (`xcodebuild`), which you install
+yourself (it needs an administrator). XcodeGen (default mode) and uv (`--release`, or when
+`python3` is missing, to run `bundle.py` with uv's Python) are installed into the cache when
+absent. Icons are not supported yet (add them in Xcode).
 
 | Option                                                                   | Meaning                                                                                                      |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
@@ -209,10 +210,38 @@ Icons are not supported yet (add them in Xcode).
 | `--certificate-p12-password <p>`                                         | `.p12` password. Env: `ROVES_IOS_CERTIFICATE_P12_PASSWORD`.                                                  |
 | `--provisioning-profile <file>` / `--provisioning-profile-base64 <data>` | Matching `.mobileprovision`. Env: `ROVES_IOS_PROVISIONING_PROFILE`, `ROVES_IOS_PROVISIONING_PROFILE_BASE64`. |
 | `--team-id <id>`                                                         | Apple Developer Team ID. Env: `ROVES_IOS_TEAM_ID`.                                                           |
-| `-n`, `-o`, `--engine-dir`, `--json`                                     | As for `android`.                                                                                            |
+| `-n`, `-o`, `--engine-dir`, `--no-install`, `--json`                     | As for `android`.                                                                                            |
 
 The Apple certificate must come from a real Apple Developer Program account (Apple countersigns
 it); unlike an Android keystore it cannot be self-generated.
+
+## Mobile toolchains (`roves setup`)
+
+```bash
+roves setup android [--no-install] [--json]
+roves setup ios [--release] [--no-install] [--json]
+```
+
+`roves android`/`roves ios` call the same preparation automatically; `roves setup` does only
+that (useful to warm a CI cache or to check a machine). Every tool is first looked for on the
+machine and reused when suitable; only the missing ones are downloaded, verified and extracted
+into `<cache>/toolchains` (per user, no admin rights, idempotent: a finished install is marked
+and reused, an interrupted one is redone). The versions are those roves-action installs:
+
+| Tool | Reused when | Otherwise installed |
+| --- | --- | --- |
+| JDK 17 | `JAVA_HOME` or `java` on PATH is Java 17+ | Latest Temurin 17 for the OS/CPU from the Adoptium API, SHA-256 from the API |
+| Android SDK | `ANDROID_SDK_ROOT`/`ANDROID_HOME` has `platform-tools`, `platforms/android-37*`, `build-tools/36.0.0` | Command-line tools revision 15859902 (SHA-256 pinned), licenses accepted, then `sdkmanager --channel=3 platform-tools <newest platforms;android-37*> build-tools;36.0.0` (no NDK: nothing is compiled) |
+| uv | `uv` on PATH | uv 0.13.10 release (SHA-256 pinned) |
+| XcodeGen (macOS) | `xcodegen` on PATH | XcodeGen 2.49.0 release zip (SHA-256 pinned); `brew install xcodegen` only if that fails |
+| Xcode (macOS) | `xcodebuild` works | Never: install it from the App Store (admin), a clear error otherwise |
+
+The installed tools are passed only to the processes `roves` starts (`JAVA_HOME`,
+`ANDROID_SDK_ROOT`, `ANDROID_HOME`, `PATH`); the shell profile and global environment are never
+changed. Disk space: about 850 MB for the Android toolchain (JDK 305 MB, SDK 480 MB,
+uv 32 MB), plus the engine source (several hundred MB) and what `mach bootstrap` adds. With
+`--no-install` nothing is downloaded and the run fails listing every missing tool. Delete
+`<cache>/toolchains` to reclaim the space.
 
 ## `roves download`: fetch and cache a player
 
@@ -265,5 +294,7 @@ failures.
 | `the standard ... player package unexpectedly contains libsteam_api...`       | A Steam asset used without `--steam`.                                                                  |
 | `chrome-sandbox lost its execute bit` / `Unix modes`                          | The Linux zip was re-created on Windows; use the original release asset.                               |
 | `icon-png ...: 300x200 is not square`                                         | Explicit icons must be valid; fix the file or drop the option.                                         |
-| `Android prerequisites missing: ...` / `iOS packaging requires macOS`         | Install the listed tools; iOS only runs on macOS.                                                      |
+| `Android toolchain incomplete: ...` / `iOS toolchain incomplete: ...`         | Shown with `--no-install`: run `roves setup android\|ios` or drop the flag. For Xcode, install it.     |
+| `... SHA-256 mismatch for ...`                                                | A download did not match its pinned/published checksum; nothing was cached. Retry, or check a proxy.   |
+| `iOS packaging requires macOS`                                                | iOS only runs on macOS.                                                                                |
 | `--release requires ...`                                                      | Provide every signing value (there is no debug-signed fallback).                                       |
