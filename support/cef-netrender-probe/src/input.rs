@@ -237,6 +237,21 @@ impl Input {
                     modifiers: self.modifiers,
                 })
             },
+            // Linux: CEF derives a char event's character from `windows_key_code` through an X
+            // keysym (browser_platform_delegate_native_linux.cc), so a Unicode value there
+            // types the wrong key ('r' = 0x72 is VKEY_F3). Text is committed through the IME
+            // path instead, which inserts any Unicode text into the focused editable element
+            // (`input`/`beforeinput` fire; no `keypress`).
+            #[cfg(target_os = "linux")]
+            Event::TextInput { text, .. } => {
+                let text: String = bmp_chars(text).collect();
+                if text.is_empty() {
+                    Ok(())
+                } else {
+                    producer.ime_commit_text(&text)
+                }
+            },
+            #[cfg(not(target_os = "linux"))]
             Event::TextInput { text, .. } => {
                 // No scan code for SDL text on Windows/Linux: 0 is DomCode NONE (`code`
                 // empty). macOS builds an NSEvent from it, where 0 is kVK_ANSI_A, so there the

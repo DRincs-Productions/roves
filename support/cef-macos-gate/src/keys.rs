@@ -7,6 +7,8 @@ use crate::key_rules::windows_key_code;
 
 /// macOS: CEF builds an `NSEvent` for a `Char` event too, where native code 0 would be
 /// kVK_ANSI_A, so the text carries the key that produced it. Linux: 0 (DomCode NONE).
+// Unused on Linux, where text goes through the IME commit path (input.rs).
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub(crate) const CHAR_NATIVE_FROM_KEY: bool = cfg!(target_os = "macos");
 
 pub(crate) fn translate(key: &KeyFields) -> KeyTranslation {

@@ -1,3 +1,13 @@
+## 2026-11-26 - CEF Linux player: typed text through the IME commit path
+
+Changed: `support/cef-netrender-probe/src/input.rs`, `support/cef-macos-gate/src/keys.rs`.
+Why: CEF on Linux derives a char event's character from `windows_key_code` through an X
+keysym, so the Unicode value the players put there typed the wrong key ('r' = 0x72 is
+VKEY_F3) and no text reached text fields (seen as the MCP fixture smoke's `type_text`
+failure). On Linux, SDL text input is now committed with welding's `ime_commit_text`
+(CefBrowserHost::ImeCommitText), which inserts any Unicode text into the focused editable
+element; `input`/`beforeinput` fire, `keypress` does not. Windows and macOS are unchanged.
+
 ## 2026-11-26 - CEF players: local MCP bridge on macOS and Linux
 
 Changed: `support/cef-netrender-probe/src/{mcp.rs,mcp_rules.rs,app.rs}`, `Cargo.toml`/
