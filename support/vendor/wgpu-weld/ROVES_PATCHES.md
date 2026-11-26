@@ -127,6 +127,20 @@ with `cargo test --no-default-features --features wgpu-29,cpu-paint-fallback --l
 pass). End to end: the macOS and Linux player-fixture CI steps (a click-initiated off-origin
 `location.href` must be vetoed and reported, the document must stay, a single load-end).
 
+### 3. Linux: wait for the request context before creating the browser
+
+`welding/src/profile.rs` (`create_initialized`, `ContextReadyHandler`) and
+`welding/src/linux_cef/mod.rs`. The Linux producer created its per-producer request context
+and called `browser_host_create_browser_sync` after a single `do_message_loop_work`. A
+disk-backed child context initializes asynchronously, so creation intermittently returned
+None (seen in the Roves Linux CI, about half of the MCP fixture launches, with no CEF log
+line). The context is now created with a `RequestContextHandler` and CEF is pumped until
+`on_request_context_initialized` fires (10 s limit, then a `SurfaceCreation` error), the
+same readiness rule the macOS backend already applies through `prepare_profile`.
+Tests: the Roves Linux gate CI (every packaged launch creates its browser this way).
+Upstream: belongs with the issue for the Linux backend; removal once upstream waits for
+initialization.
+
 ## Upstream
 
 Not opened yet (no credentials in this session); see `TODO.md`. Prepared texts:

@@ -1,3 +1,12 @@
+## 2026-11-26 - CEF Linux player: browser created after its profile is initialized
+
+Changed: `support/vendor/wgpu-weld/welding/src/{profile.rs,linux_cef/mod.rs}`,
+`support/vendor/wgpu-weld/ROVES_PATCHES.md` (change 3).
+Why: on Linux the browser was created one message-loop turn after its disk-backed profile
+context, which CEF initializes asynchronously; `browser_host_create_browser_sync` then
+returned None intermittently and the game exited 1 at startup (seen in CI). The producer
+now waits for `on_request_context_initialized` (10 s limit), as the macOS backend does.
+
 ## 2026-11-26 - CEF Linux player: typed text through the IME commit path
 
 Changed: `support/cef-netrender-probe/src/input.rs`, `support/cef-macos-gate/src/keys.rs`.

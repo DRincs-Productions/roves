@@ -221,10 +221,14 @@ impl LinuxCefProducer {
             // Passing no request context selects CEF's process-global profile.
             // Build one even for the in-memory case so every producer owns its
             // cookies, storage, and permission decisions.
-            let mut request_context = crate::profile::create(_runtime, &config.surface)?;
             // A disk-backed child context completes its initialization through
-            // the host loop before it can create a browser.
-            _runtime.do_message_loop_work();
+            // the host loop before it can create a browser; one loop turn was not
+            // always enough (Roves change 3, ROVES_PATCHES.md).
+            let mut request_context = crate::profile::create_initialized(
+                _runtime,
+                &config.surface,
+                std::time::Duration::from_secs(10),
+            )?;
 
             let browser = cef::browser_host_create_browser_sync(
                 Some(&window_info),
