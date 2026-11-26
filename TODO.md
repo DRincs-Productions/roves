@@ -90,100 +90,19 @@ Questa voce pianifica l'integrazione opzionale; non introduce SDK o funzionalit�
 - [ ] **Salvataggi locali robusti:** valutare scritture atomiche, backup/recupero da interruzioni, schema/versioni e migrazioni; il protocollo attuale usa scritture dirette ai file.
 - [ ] **Conflitti Steam Cloud:** il backend esiste già, ma documenta una politica locale-prima con download cloud quando manca il file locale. Implementare confronto/versioni e risoluzione dei conflitti se richiesti; verificare errori/quota/offline senza perdere il salvataggio locale.
 - [ ] **Steam avanzato, opzionale:** valutare classifiche e ulteriori servizi richiesti dai giochi. Obiettivi, statistiche, DLC, overlay e Steam Cloud sono già implementati: concentrare il backlog sulle capability mancanti e sui test reali.
-- [ ] **MCP e skill per far giocare le AI:** progettare e realizzare un MCP mantenuto dal progetto e le relative skill/istruzioni, così un agente AI può avviare un gioco Roves, osservare lo stato e interagire con dialoghi, scelte, input e controlli supportati per completare playtest ripetibili. Valutare prima il riuso del bridge di testing `Game.testing` già presente in Pixi'VN e dei protocolli/librerie MCP mantenuti; definire trasporto, capability, avvio/chiusura sessione, timeout ed errori senza esporre strumenti arbitrari del sistema. Documentare installazione e uso per gli sviluppatori di giochi e verificare il flusso end-to-end su un gioco di esempio.
 - [ ] **Aggiornamenti contenuti, opzionali:** progettare aggiornamento/versionamento dei contenuti senza ricreare sempre il bundle, con integrità, rollback e coerenza della cache. Decidere prima se serve un updater completo o basta il meccanismo di aggiornamento della piattaforma store.
 
 ### Prestazioni del player CEF
 
 Vedi il [backlog prestazioni](docs/ROVES_PERFORMANCE.md) per le misure e gli interventi ancora aperti.
 
-## SDL3 windowing: gap residuo
-
-La migrazione da `winit`/`gilrs` a SDL3 (finestra, event loop, input, gamepad) è completa e
-mergiata su `main` (rilasciata da `v0.4.24` in poi) — vedi `CUSTOMIZATIONS.md` per lo storico
-completo e [`SDL3_WINDOWING_TESTING.md`](./SDL3_WINDOWING_TESTING.md) per la checklist di verifica
-hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
-
-- [ ] **Gamepad disabilitato su macOS, causa non confermata:** il runtime completo aveva
-  `sdl3::init().gamepad()` bloccato su una precedente CI macOS (un run ha raggiunto le 6 ore);
-  una variante che disabilitava solo IOKit non ha risolto il problema, come documentato in
-  `CUSTOMIZATIONS.md`. Il 2026-09-27 il probe isolato ha superato `sdl3::init()`,
-  `Sdl::gamepad()` e `Sdl::event_pump()` su `macos-26-arm64`; il blocco non si riproduce nel caso
-  minimo. Il test successivo aggiunge un gamepad virtuale con l'API di SDL3 e verifica gli eventi
-  di connessione, asse, pulsante e disconnessione su CI macOS/Windows/Linux. I test del bridge
-  verificano ora la mappatura SDL→Servo per pulsanti standard, assi, trigger e valori limite.
-  Il 2026-09-28 (patch 0047) il gate di compilazione è diventato un opt-in a runtime
-  `ROVES_MACOS_GAMEPAD=1`, sempre spento per default, e `ROVES_TEST_VIRTUAL_GAMEPAD=1` fa
-  collegare alla shell un gamepad virtuale SDL. La CI macOS lancia il runtime completo con
-  entrambi e verifica il completamento dell'init e la consegna dei pulsanti alla Web Gamepad API
-  della test-page. Linux e Windows fanno la stessa verifica nello smoke test principale. Resta
-  da provare un controller fisico (IOKit HID) su un Mac reale prima di attivarlo per default:
-  l'utente non ha un Mac, quindi il punto resta aperto. Aggiornamento 2026-09-28 sera: Linux e Windows ricevono
-  in CI i pulsanti del gamepad virtuale nella pagina (patch 0049–0051). Su macOS 1 run su 4 ha
-  riprodotto il blocco del thread principale subito dopo la prima pressione virtuale, prima del
-  caricamento della pagina: il gamepad macOS resta spento per default e lo step CI macOS è solo
-  informativo (patch 0053). Il primo run su `main` dopo questo fix (`a5d3638`, 2026-09-29) è
-  risultato pulito, ma un solo run verde non basta con uno stallo storicamente 1/4: lo step ora
-  lancia il bundle 4 volte nello stesso job e riporta `N/4 clean, M/4 stalled` (vedi
-  CUSTOMIZATIONS.md del 2026-09-29), per raccogliere prove reali senza dipendere da push ripetuti
-  (il workflow non si riattiva su commit vuoti). **Aggiornamento 2026-09-29:** il run campionato
-  (`4cd2ab3`) ha dato **4/4 clean, 0/4 stalled** — sommato al run singolo precedente, 5 campioni
-  consecutivi puliti dopo il fix 0053, contro l'1/4 osservato prima. Lo stallo non si è più
-  riprodotto, ma lo step resta informational-only e il gamepad macOS resta spento per default:
-  5 campioni CI non sostituiscono un controller fisico (IOKit HID) su un Mac reale, che l'utente
-  non ha. Prossimo passo, se si vuole più confidenza prima di un eventuale controller reale:
-  ripetere il campionamento 4x su un secondo run futuro (qualunque prossimo push che
-  tocca i sorgenti lo farà automaticamente) per accumulare altri campioni nel tempo.
-## Rendering futuro: fast path wgpu — backlog
-
-- [ ] Progettare un fast path interno a Servo per il caso di una singola
-  WebView/canvas fullscreen, inizialmente WebGPU, riducendo composizione, blit,
-  clear e copie GPU non necessari. Mantenere WebRender come percorso completo.
-- [ ] Attivarlo solo quando la pagina e lo stato grafico soddisfano condizioni
-  verificabili; DOM/CSS, overlay, dialoghi, trasparenza o feature incompatibili
-  devono tornare automaticamente al percorso generale senza differenze visibili.
-- [ ] Preservare resize/HiDPI, color space e alpha, screenshot/capture, context
-  loss, metriche, accessibilità e presentazione coerente su Windows, macOS e
-  Linux.
-- [ ] Implementarlo soltanto dopo telemetria e baseline: confrontare copie GPU,
-  composizione, latenza, p95/p99 e frame oltre budget. Questa è
-  un'ottimizzazione futura, non una priorità dell'intervento corrente.
-
 ## Dipendenze, release e manutenzione
 
-- [ ] **GStreamer dal sito ufficiale:** da ottobre 2026 `gstreamer.freedesktop.org` tronca i download dopo circa 1 MiB e spesso risponde 503. Per questo le build Windows/macOS e `mach bootstrap` scaricano gli installer di GStreamer dalla copia verificata nella release `deps-gstreamer-<versione>` di questo repo (`.github/workflows/gstreamer-mirror.yml`, `support/gstreamer_mirror.py`, `python/servo/platform/{macos,windows}.py`), e usano il sito ufficiale solo come ripiego. Quando il sito ufficiale torna affidabile, rimettere il link ufficiale come fonte principale, oppure decidere di tenere la copia come cache; a ogni nuova versione di GStreamer, rilanciare il mirror con un tag `deps-gstreamer-<versione>`.
 - [ ] **Grafo desktop effettivo:** controllare feature e duplicazioni del target scelto prima di rimuovere dipendenze o deduplicare major incompatibili; non trattare tutto il lockfile workspace come contenuto del binario.
 - [ ] **Distribuzione del fork:** verificare che i consumer esterni (`roves-action`, Packmaster) scarichino Roves patchato al tag corretto — vedi anche il due riferimenti Action e `shell-version.txt` condiviso TS/Rust, va bumped a ogni release rilevante (vedi `AGENTS.md`).
 - [ ] **Matrice di regressione:** aggiungere/verificare smoke test delle app confezionate con routing, JS, storage, salvataggi, grafica, audio e API native; separare test della build, test della firma e test sul dispositivo.
-- [ ] **Riproducibilità:** ogni modifica runtime deve essere riproducibile da upstream + patch e mantenere coerenti documentazione, lockfile, bundle e asset CI. Gli aggiornamenti del solo backlog non richiedono una patch del motore.
 - [ ] **Console:** definire priorità e feasibility per i target roadmap prima di considerarli supportati; implementazioni e validazione richiedono gli SDK e ambienti appropriati.
 - [ ] **APK signing — `roves-action`:** nuovi input `android-keystore-*` (verosimilmente un keystore base64-encoded via GitHub Secret, decodificato in un file temporaneo, con le 4 variabili d'ambiente `APK_SIGNING_KEY_STORE_PATH`/`_STORE_PASS`/`_ALIAS`/`_PASS` impostate prima di invocare `mach bundle`). Lato motore e Packmaster già fatto (vedi `CUSTOMIZATIONS.md`, voce "`mach bundle --android-release`").
-
-## Runtime Deno: ripristinare il preload JSON — ottimizzazione futura
-
-- [ ] **Implementare `link rel="modulepreload" as="json"` senza alterare gli import JSON.**
-  Serve ad anticipare rete e preparazione di dati che il gioco importera in seguito,
-  per esempio configurazioni di una route o dati del prossimo livello. Puo ridurre
-  l'attesa al primo utilizzo se il caricamento si sovrappone ad altro lavoro; non e
-  necessario per la correttezza del gioco. Anticipare dati inutilizzati costa rete e RAM:
-  misurare prima di raccomandarlo e non promettere risparmi o tempi migliori.
-- **Stato temporaneo autorizzato il28ottobre2026:** il preload JSON emette un warning
-  limitato e l'evento `error` sul link; non deve notificare un falso `load` o interrompere
-  il gioco. `import(url, { with: { type: "json" } })` resta supportato. L'import senza
-  l'attributo richiesto deve continuare a rigettare con TypeError, anche dopo un preload.
-- **Vincolo architetturale:** preferire API pubbliche mantenute di deno_core, riusando
-  fetch Servo per CSP/CORS, MIME, credenziali, referrer, integrity e redirect. Nessun fork,
-  grafo duplicato permanente o namespace Deno privilegiato ai giochi. Il primo esperimento
-  con JSON come radice side-module e SCARTATO: rendeva accettabile un import senza type json.
-  Prova negativa locale: target/task-0385/json-root-diagnostic-negative-fixed.log; il
-  percorso e ignorato da Git, quindi su un nuovo checkout occorre riprodurre il difetto.
-- **Completamento:** eventi load/error corretti per successo, JSON invalido, MIME errato,
-  fetch negato e cancellazione; typed import successivo riusa la registrazione/cache
-  senza nuovo download evitabile; untyped import resta negato; nessuna esecuzione di JS
-  arbitrario per precaricare JSON; rispetto delle policy e chiusura senza riferimenti
-  pendenti. Verificare Windows/Linux normal/JITless e confrontare caricamenti freddi,
-  caldi, rete lenta e dati mai utilizzati (avvio, attesa al primo uso, richieste e memoria).
-  Non chiudere il punto con un mock o con la sola prova isolata dell'API.
 
 ## Regola per chiudere i punti
 
@@ -191,34 +110,6 @@ Distinguere sempre **implementato**, **verificato** e **proposto in PR**. Un pun
 si chiude con evidenza pertinente al comportamento finale, poi va rimosso da questo file
 (il dettaglio va in `CUSTOMIZATIONS.md`).
 
-
-## Deno Core: ricontrollo patch temporanea TLA
-
-- [ ] A ogni aggiornamento Deno e prima del rilascio stabile, ricontrollare [issue37097](https://github.com/denoland/deno/issues/37097) e [PR37098](https://github.com/denoland/deno/pull/37098), aperta e pronta per la revisione al 21 novembre 2026. Il sorgente della PR è nel [fork Deno esistente](https://github.com/BlackRam-oss/deno/tree/codex/fix-cached-static-tla). Il vecchio repository deno_core è archiviato dopo la confluenza in denoland/deno.
-- [ ] **Canvas 2D, ultimo intervento prima del rilascio.** Provare il [fork di vl-convert](https://github.com/BlackRam-oss/vl-convert) con un solo deno_core 0.413.0 e verificare il testo Pixi del ramo `second_part`, inclusi contorno e ombra. Dopo gli altri fix, concordare backend e perimetro nella [discussione upstream](https://github.com/denoland/deno/issues/5701#issuecomment-7066368964). Nel fork Deno creare `codex/offscreen-canvas-2d` da `denoland/deno:main` per la PR Canvas 2D, collegata a #5701. Dopo aver verificato e aperto la PR, creare `codex/roves-integration` sulla revisione Deno compatibile con Roves e integrarvi i due fix Canvas 2D e TLA. Verificare insieme le due regressioni e un solo grafo deno_core/V8, poi fissare lo SHA del branch di integrazione. Tornare alle versioni ufficiali quando superano entrambe le regressioni.
-- [ ] Quando una crate ufficiale contiene il fix (non basta che l'issue sia chiusa), verificarla senza patch con regressioni TLA radice/discendente, resolve/reject, identita cache/eccezioni e fetch/esecuzione una volta, in normale e JITless.
-- [ ] Dopo native e browser/security CI verdi, eliminare snapshot components/roves-js/vendor/deno_core e override Cargo root/standalone, aggiornare entrambi i lock e patch/replay, README/wiki/CUSTOMIZATIONS. Conservare una sola versione V8; non rimuovere anticipatamente le regressioni. Provenienza/licenza e commit fork sono in ROVES_PATCHES.md nello snapshot.
-
-## Compatibilita HTML rinviata: SourceText
-
-- [ ] Correggere il testo restituito da Function.prototype.toString per handler HTML inline
-  con scope DOM (0361), conservando lookup, receiver, nome, lunghezza e ciclo di vita.
-  Il codice degli handler funziona; nessun gioco o libreria concretamente incompatibile
-  è stato identificato. Evidenza storica: in Chrome 155 su Windows, per un onclick con corpo
-  `this.rovesHits += 1;`, sourceText era `function onclick(event) {\nthis.rovesHits += 1;\n}`;
-  V8 `CompileFunction` senza scope produceva lo stesso testo, mentre con `scopeProxy` produceva
-  `function (event) {this.rovesHits += 1;\n}`. Il passo 3.9 dell'algoritmo HTML richiede il
-  testo esatto incluse le LF: è una lacuna di conformità ancora aperta. La prova 0363 ha mostrato
-  che la facade con interceptor cambia `this` per le chiamate nude e non è una soluzione.
-  Preferire API pubbliche mantenute V8 per handler wrappati, preservando lookup e receiver; niente
-  formatter, override globale di `toString`, layout V8 privato, parser ad hoc o facade che cambia
-  `this`.
-- **Scelta utente29ottobre2026:** lavoro non essenziale, fuori dai criteri di completamento
-  della migrazione V8. Riprenderlo solo come compatibilita futura motivata.
-- **Anche il preload JSON e fuori dalla migrazione V8**, per scelta utente29ottobre2026:
-  resta il TODO dettagliato "Runtime Deno: ripristinare il preload JSON". Import JSON
-  normali funzionanti; preload esplicitamente indisponibile. Il prototipo futuro dovra
-  conservare type json, cache e sicurezza; non estendere per ora il fork TLA a questo scopo.
 
 ## Link e navigazione: approfondire la compatibilita nel documento unico
 
@@ -237,11 +128,6 @@ si chiude con evidenza pertinente al comportamento finale, poi va rimosso da que
 - [ ] Confrontare librerie/router mantenuti e casi reali prima di introdurre un adattatore
   condiviso. Preservare sicurezza, document lifetime e policy prodotto; non allentare il
   blocco delle navigazioni complete solo per fare funzionare un link di prova.
-
-## Memoria del documento di gioco
-
-- [ ] Misurare memoria nativa e sessioni lunghe su scene reali nel flusso performance.
-- La smoke controllata con 12 transizioni e 36 riferimenti deboli è verde su Ubuntu normale e JITless dopo il fix di replaceState. [CI V8](https://github.com/DRincs-Productions/roves/actions/runs/42189932118).
 
 ## Player CEF
 
@@ -266,4 +152,4 @@ si chiude con evidenza pertinente al comportamento finale, poi va rimosso da que
 - [ ] **Fallback software CEF (`OnPaint`) nei player: fork temporaneo di welding** (25 novembre 2026; `support/vendor/wgpu-weld/ROVES_PATCHES.md`, README dei player "Software paint"). Blocco di rilascio: senza GPU importabile (WARP su Windows, anche nei PC senza GPU; lavapipe, NVIDIA proprietario, VM su Linux) l'OSR accelerato non dà frame e la finestra resta nera. welding e991684 vendorizzato in `support/vendor/wgpu-weld` (dipendenza path nei tre player, lock invariato salvo la riga `source`); implementato il percorso standard di CEF `shared_texture_enabled = 0` + `OnPaint` (BGRA, solo righe sporche copiate, unione dei dirty rect caricata con `Queue::write_texture` in una texture persistente restituita come frame importato). Scelta nell'host (`game_rules::paint_path`): adattatore `DeviceType::Cpu`, device DMA-BUF non creabile su Linux, o `ROVES_FORCE_CPU_PAINT=1`; log `evidence=software`. CI aggiornata: WARP deve mostrare frame software (16 `PASS pixel`, rilascio della schermata di avvio del template, host API exit 0); Linux su lavapipe exit 0 con `evidence=software` e lettura del colore; exit 3 rimosso. Verifiche locali: clippy/fmt Windows (`dox`, `dox,steam`), cross clippy/fmt macOS/Linux, test welding `cpu_paint`, `cef-host-api-tests`, YAML. **Non eseguito:** build completa e CI, prova su PC senza GPU reale. Da fare: (1) aprire upstream su merely-made/wgpu-weld l'issue e la PR con i testi preparati in `ROVES_PATCHES.md` (branch dedicato dal `main` upstream nel fork), registrare qui i link; (2) a ogni release di welding ricontrollare se il fallback `OnPaint` è incluso e, appena una release ufficiale passa i gate WARP e lavapipe, rimuovere `support/vendor/wgpu-weld` e tornare alla dipendenza pubblicata; (3) misurare il costo CPU dell'upload software (copie righe + `write_texture`) sul flusso performance.
 - [ ] **Link esterni e documento unico nei player CEF** (26 novembre 2026; `support/cef-windows-player/src/external_link.rs`, README della probe "External links", welding modifica 2 in `support/vendor/wgpu-weld/ROVES_PATCHES.md`). welding ha ora un veto delle navigazioni del main frame (`CefSurfaceConfig::main_frame_navigation_policy`, CEF `OnBeforeBrowse` nei tre backend, evento `NavigationBlocked`, eco `ERR_ABORTED` del veto scartato); i tre player lo usano con `main_frame_policy` (stesso origin loopback e bootstrap `about:blank` consentiti, tutto il resto annullato prima della richiesta). Popup rifiutati e navigazioni bloccate vanno nel browser di sistema (`open` 5.4.5) solo per http/https/mailto, con gesto utente, fuori dall'origin del gioco, al massimo una volta al secondo; log solo schema + host. Fixture macOS/Linux: clic che naviga verso example.com e apre un popup verso example.org (log-only `ROVES_TEST_EXTERNAL_OPEN_LOG=1`), popup senza gesto verso example.net mai aperto. Verifiche locali: clippy Windows `dox`/`dox,steam` (il clippy completo non-dox non è ripartito: cache CMake di `cef-dll-sys` creata con il `ninja` di depot_tools nel PATH), cross clippy macOS/Linux (`dox`, `dox,steam`), fmt, test welding (62) e `cef-host-api-tests`, YAML. **Da fare:** (1) CI macOS/Linux: confermare che CEF riporti `user_gesture=true` per `location.href` nel click handler e per il `window.open` 2 s dopo, e che l'annullamento non produca `LoadError`; (2) nessuna prova CI Windows del percorso (la fixture Windows non clicca link) né con un browser di sistema reale: prova manuale su Windows/macOS/Linux; (3) i reload e le navigazioni complete dello stesso origin restano consentiti nei player CEF (come prima), a differenza della policy single-document della shell Servo: decidere se bloccarli (sezione "Link e navigazione"); (4) issue/PR upstream su merely-made/wgpu-weld per il veto, poi ricontrollare a ogni release di welding e rimuovere la modifica quando upstream offre un veto equivalente.
 - [ ] **Release v0.9.0 del player CEF** (25 novembre 2026; `.github/workflows/release.yml`, README della probe "Releases"): su tag `v*.*.*` richiama i tre workflow dei player (`workflow_call`, Windows con `release: true` che forza smoke e upload del pacchetto MCP; i trigger push ora solo su branch) e pubblica `roves_shell_{windows,windows_steam,windows_mcp,macos,macos_steam,macos_mcp,linux,linux_steam,linux_mcp}.zip` + `SHA256SUMS.txt`, dopo il controllo di layout e checksum degli zip e con verifica finale dei dieci asset (pacchetti MCP macOS/Linux aggiunti il 26 novembre 2026). Nuovo pacchetto Windows Steam giocabile (`packaging/steam_package.ps1`, lancio senza Steam in CI). Verifiche locali: YAML, `bash -n`, parser PowerShell, test dello script Steam e del verificatore zip su file finti. **Non eseguito in CI** (nessun tag ancora); poi aggiornare i pin di roves-action e Packmaster (che oggi documenta solo gli artifact) e la wiki.
-- [ ] Fasi successive non iniziate: IPC/servizi host Deno. Ricontrollare a ogni salto di versione il pin `cef =156.7.0` (CEF 156.0.31) della fase 1 e `cef =154.5.0` del player Windows rispetto alle release di cef-rs e di welding.
+- [ ] Ricontrollare a ogni salto di versione il pin `cef =154.5.0` del player rispetto alle release di cef-rs e di welding.

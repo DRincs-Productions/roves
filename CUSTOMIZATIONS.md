@@ -1,3 +1,23 @@
+## 2026-11-26 - AGENTS.md, TODO.md and docs/ trimmed to the CEF player
+
+Changed: `AGENTS.md` (633 -> 450 lines), `TODO.md`, `docs/DEPENDENCY_REVIEW.md` (rewritten);
+removed `docs/{AGENT_WORKFLOW,AUDIT_MIGRAZIONE_LIBRERIE,INVENTARIO_CODICE_ROVES,
+LIBRERIE_E_CONSOLE,PIANO_MIGRAZIONE_LIBRERIE,V8_MIGRATION_PHASE0_INVENTORY}.md`,
+`docs/handoff/`, `docs/measurements/`, `SDL3_WINDOWING_TESTING.md`; `roves-wiki` links to them
+now point at commits that still hold them.
+Why: user decision. They described the Servo engine, the V8/deno_core runtime and the
+Blitz/Deno probe, all removed from `main`. `AGENTS.md` drops the migration rules (SourceText and
+JSON preload backlog, the five-hour migration trigger, deno_core loading/error/URL deviations,
+the Servo shell and Blitz direction), the expired October exceptions and the `mach`-based
+consumer sync rules; it gains a short description of the current product, keeps the
+single-document policy, the library-fork exception (generalized), the library, Chromium,
+DevTools, coordination, CI, authorization, PAT, changelog, wiki and release rules, and its
+consumer sync now names roves-cli, the package layout and the icon contract. `TODO.md` loses
+the engine-only sections (servoshell SDL3 gaps, WebRender fast path, Deno JSON preload and TLA,
+SourceText, document memory), the GStreamer and patch-reproducibility items and the now done
+"MCP and skills for AI players" item. `docs/DEPENDENCY_REVIEW.md` lists the players'
+dependencies and open dependency work.
+
 ## 2026-11-26 - README rewritten for the CEF player; Blitz backlog removed
 
 Changed: `README.md`, `TODO.md`.
