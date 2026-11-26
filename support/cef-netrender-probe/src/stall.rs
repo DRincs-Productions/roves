@@ -20,7 +20,7 @@ pub(crate) enum Step {
     Events,
     /// The single `acquire_frame` call (mailbox take, plus import when a frame was there).
     AcquireFrame,
-    /// Netrender render with its internal submits, or the wgpu blit encode plus its submit.
+    /// The composition blit encode plus its submit.
     Compose,
     /// `surface.get_current_texture`.
     SurfaceAcquire,

@@ -53,13 +53,13 @@ const FIXTURE_HTML: &str = include_str!("fixture.html");
 const BLIT_WGSL: &str = include_str!("blit.wgsl");
 const INITIAL_SIZE: PhysicalSize<u32> = PhysicalSize::new(1280, 720);
 const RESIZED_SIZE: PhysicalSize<u32> = PhysicalSize::new(960, 540);
-/// Composed (Netrender master / plain-wgpu target) format: Netrender's master is a storage
-/// texture, which rules out BGRA without an extra feature.
 /// A static first screen paints before its load-end and never again, so no frame can be
 /// newer than the load-end. Chromium's paint holding also ends on a timeout
 /// (`RenderWidgetHostImpl` new-content rendering timeout, 4 s); after this delay the startup
 /// screen gives way to a frame the game document already painted.
 const STARTUP_SETTLE_AFTER_LOAD_END: Duration = Duration::from_secs(1);
+/// Composed target format (`Rgba8Unorm`: a choice of the removed Netrender comparison, kept
+/// unchanged; a BGRA target or no intermediate pass is a performance question to measure).
 const COMPOSED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Imported frames of the expected size required before a check (the page must have painted
 /// its content, not only the initial transparent frame).
@@ -132,7 +132,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     };
     log.line(format_args!("sandbox-info present=true mode=sandboxed"));
     log.line(format_args!(
-        "versions welding=0.15.0@e991684 cef={} wgpu=29.0.4 compose=wgpu",
+        "versions welding=0.15.0@e991684 cef={} wgpu=29.0.4",
         cef_version()
     ));
     if options.sustained {
@@ -817,7 +817,6 @@ impl Options {
                 "no-error-dialog" => no_error_dialog = true,
                 "isolated-profile" => isolated_profile = true,
                 "mcp" if value.is_empty() => mcp_switch = true,
-                "compose" if value == "wgpu" => {},
                 "timeout-ms" => options.timeout = parse_ms(name, value)?,
                 "keep-open" => options.keep_open = true,
                 "timings" => options.timings = true,
@@ -2769,7 +2768,7 @@ impl Probe {
     fn report_timings(&mut self, phase: &str) {
         if let Some(t) = self.timings.as_mut() {
             let log = &self.log;
-            t.report(phase, "wgpu", |line| {
+            t.report(phase, |line| {
                 log.line(format_args!("{line}"));
             });
         }

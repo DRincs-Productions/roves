@@ -20,10 +20,9 @@ pub(crate) enum Stage {
     /// `acquire_frame` that returned a frame: mailbox take, grafting's D3D12 open/wrap and
     /// welding's 1-texel copy + wait.
     Import,
-    /// Producing the composed texture: Netrender `render_with_compositor_and_external_textures`
-    /// (encode and its own internal submits), or the wgpu blit encode only.
+    /// Encoding the composition blit.
     Compose,
-    /// wgpu mode only: `queue.submit` of the composition blit.
+    /// `queue.submit` of the composition blit.
     ComposeSubmit,
     /// `surface.get_current_texture` (may block on the frame-latency limit / vsync).
     Acquire,
@@ -192,10 +191,10 @@ impl Timings {
     }
 
     /// Emits one header line and one line per non-empty stage, then clears everything.
-    pub(crate) fn report(&mut self, phase: &str, compose: &str, mut emit: impl FnMut(String)) {
+    pub(crate) fn report(&mut self, phase: &str, mut emit: impl FnMut(String)) {
         let window_ms = self.first_sample.map_or(0, |t| t.elapsed().as_millis());
         emit(format!(
-            "timings phase={phase} compose={compose} clock=wall-monotonic unit=us window_ms={window_ms} \
+            "timings phase={phase} clock=wall-monotonic unit=us window_ms={window_ms} \
              presented={} imported={} superseded_producer_frames={} empty_acquire_polls={} \
              dropped_samples={} excluded=loading,verification-readback,closing percentile=nearest-rank",
             self.presented, self.imported, self.superseded, self.empty_polls, self.dropped
@@ -254,7 +253,7 @@ mod tests {
         assert!(t.samples[Stage::PresentInterval as usize].is_empty());
         assert_eq!(t.samples[Stage::ImportInterval as usize], vec![16_000]);
         let mut lines = Vec::new();
-        t.report("initial", "wgpu", |l| lines.push(l));
+        t.report("initial", |l| lines.push(l));
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("superseded_producer_frames=2"));
         assert!(lines[1].contains("stage=import-interval count=1"));

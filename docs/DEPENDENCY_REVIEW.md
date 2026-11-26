@@ -26,7 +26,7 @@ WebRender resta il renderer completo. I risultati prestazionali sono in
   156.7.0) in una probe Windows isolata; non cambia questa decisione per la produzione.
   `support/cef-netrender-probe` valuta, sempre in isolamento, l'OSR accelerato di CEF 154
   importato su wgpu tramite `welding` (merely-made/wgpu-weld, MPL-2.0, con `grafting`) e
-  composto da Netrender: librerie scelte per non scrivere a mano l'import D3D11/D3D12 né il
+  presentato con wgpu (la composizione Netrender del prototipo è stata rimossa): librerie scelte per non scrivere a mano l'import D3D11/D3D12 né il
   bootstrap sandbox di CEF. Esito e limiti nel README della probe.
 
 ## Candidati ancora aperti

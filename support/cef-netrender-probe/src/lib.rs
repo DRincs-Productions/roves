@@ -1,4 +1,4 @@
-//! CEF accelerated OSR -> wgpu-weld -> Netrender feasibility probe (Windows only). Entry point
+//! Roves CEF player for Windows: CEF accelerated OSR -> wgpu-weld -> wgpu. Entry point
 //! called by CEF's bootstrap.exe, which initializes the Windows sandbox broker before loading
 //! this DLL; see README.md for options, checks, the opt-in real-game mode and limitations.
 

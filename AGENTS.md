@@ -408,9 +408,8 @@ Temporary forks of third-party libraries authorized above (the deno_core snapsho
 `ROVES_PATCHES.md` accurate as prose: provenance (published version, checksum or upstream
 commit), what each change does and why, the regression tests, the upstream issues/PRs, and
 the removal criteria. Exact diffs come from comparing with the published crate or from git
-history. Upstream patch fixtures that a CI proof actually consumes (for example
-`support/netrender-shared-device-proof/upstream/`) are test inputs, not tracking records,
-and stay where they are.
+history. Upstream patch fixtures that a CI proof actually consumes are test inputs, not
+tracking records, and stay where they are.
 
 ## Standing authorization: autonomous CI/push/release loop
 

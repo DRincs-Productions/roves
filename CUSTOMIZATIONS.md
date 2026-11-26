@@ -1,3 +1,21 @@
+## 2026-11-26 - Netrender removed
+
+Changed: removed `support/netrender-shared-device-proof/`, `.github/workflows/netrender-proof.yml`
+and `docs/handoff/2026-11-15-netrender-blitz.md`; `support/cef-netrender-probe/`
+(`src/{app,timings,stall,lib}.rs`, `src/bin/bundle.rs`, `src/blit.wgsl`, `src/fixture.html`,
+`README.md`), `.github/workflows/cef-netrender-probe.yml`, `TODO.md`, `AGENTS.md`,
+`rust-toolchain.toml`, `docs/DEPENDENCY_REVIEW.md`, `support/cef-window-probe/README.md`.
+Why: user decision; Netrender was evaluated as a 2D compositor and is no longer planned. The
+Windows player already composed with a plain wgpu blit and linked no Netrender crate; what
+remained were the shared-device proof (the only crate depending on Netrender) and its
+workflow, the `--roves-compose=wgpu` option (accepted as a no-op and passed by eight CI
+steps), the `compose=wgpu` fields of the `versions` and `timings` log lines, and the README's
+Netrender/wgpu comparison receipts (about 330 lines), now summarized in a short history
+note. The README header now describes the player as it is (SDL3 window, part of the
+release). The composed target stays `Rgba8Unorm`; changing it or dropping the intermediate
+pass is a performance question, recorded in `TODO.md`. The folder, crate and workflow keep
+their `cef-netrender-probe` name for now.
+
 ## 2026-11-26 - MCP bridge: screenshots, page probes, PixiJS scene; playtest skill
 
 Changed: `support/cef-netrender-probe/src/{mcp.rs,mcp_rules.rs,app.rs}`,

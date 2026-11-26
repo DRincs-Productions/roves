@@ -96,6 +96,6 @@ fn build_cdylib(
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("the CEF Netrender probe bundle is Windows-only");
+    eprintln!("the Windows CEF player bundle is Windows-only");
     std::process::exit(1);
 }

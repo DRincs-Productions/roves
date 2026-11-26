@@ -3,7 +3,7 @@
 Isolated experiment, separate Cargo workspace. Nothing in the engine, `roves-action`,
 Packmaster or any release depends on it; other targets are untouched. Stage 1 only: one
 sandboxed CEF window showing the unmodified game build. **Not implemented here:** Deno/V8
-IPC, the Netrender stage, the single-document navigation policy beyond popup refusal,
+IPC, the single-document navigation policy beyond popup refusal,
 `game://`, CSP, JITless, Steam, input/audio checks, macOS/Linux.
 
 ## What it does
@@ -120,7 +120,7 @@ bootstrap.exe must be both unsigned or signed with the same certificates.
   through axum) lets `server.rs` wrap it with the conservative cache policy (`no-cache`,
   per-instance ETag, no `Last-Modified`, `If-Range`), documented with its fixture
   (`fixtures/static-compat`) in `../cef-netrender-probe/README.md`, "Loopback cache policy".
-- No Deno, V8 or Netrender crate is linked in this stage.
+- No Deno or V8 crate is linked in this stage.
 
 ## Known limits of stage 1
 

@@ -1,7 +1,6 @@
 // Full-target triangle sampling one texture 1:1. Used twice, never with a CPU copy:
-// - present: the composed frame (Netrender master or the plain-wgpu target) onto the
-//   window surface, blending disabled;
-// - `--roves-compose=wgpu` only: the imported CEF texture over the cleared background with
+// - present: the composed frame onto the window surface, blending disabled;
+// - compose: the imported CEF texture over the cleared background with
 //   premultiplied-alpha blending (CEF OSR output is premultiplied BGRA).
 // The sampler uses nearest filtering and the viewport equals the source size, so texels are
 // not resampled.
