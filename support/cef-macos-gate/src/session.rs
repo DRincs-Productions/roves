@@ -9,6 +9,13 @@
 //! - page input (README "Input"): SDL3 mouse, wheel, keyboard and committed text, focus,
 //!   visibility and cursor shape through `input.rs`, with this platform's key codes
 //!   (`keys.rs`);
+//! - the optional local MCP bridge (Windows player README "Local MCP bridge",
+//!   `support/cef-netrender-probe/mcp/README.md`): the Windows player's `mcp.rs`, started
+//!   here before the browser when `--roves-mcp` or the package marker asked for it. Its
+//!   requests run in this loop: `state` from this session, `evaluate` over the same DevTools
+//!   channel as the page markers (which then also define `window.__ROVES_MCP__`), and
+//!   `click`/`press_key`/`type_text` through the same `Input` as SDL events, once the game
+//!   load-end was accepted (as real input);
 //! - the test-only input hook `ROVES_GATE_TEST_INPUT_MS=<ms>` (CI): that long after the
 //!   accepted game load-end, one synthetic left click at `TEST_CLICK_POINT`, one ArrowRight
 //!   press and one wheel notch are pushed into SDL's queue and come back through the ordinary
@@ -24,7 +31,7 @@ use sdl3::{
     mouse::{MouseButton, MouseUtil, MouseWheelDirection},
     video::Window,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use welding::CefSurfaceProducer;
 
 use crate::game_rules::{
@@ -34,6 +41,7 @@ use crate::game_rules::{
     key_marker, on_origin, wheel_marker,
 };
 use crate::input::Input;
+use crate::mcp::{Bridge, Call, Source};
 use crate::page_init::PageInit;
 
 /// Test-only environment variable of the synthetic input hook (milliseconds after load-end).
@@ -58,12 +66,23 @@ pub(crate) struct Session {
     loaded_at: Option<Instant>,
     pub(crate) input: Input,
     test: Option<InputTest>,
+    /// The local MCP bridge, when asked for and started.
+    mcp: Option<Bridge>,
     pub(crate) failed: bool,
 }
 
+/// What the loop knows of the frames, for the MCP `state`.
+pub(crate) struct Frames {
+    /// Frames imported so far.
+    pub(crate) imported: u32,
+    /// The first game frame is on screen (startup screen released).
+    pub(crate) shown: bool,
+}
+
 impl Session {
-    /// `origin`: the game's loopback origin (`http://127.0.0.1:<port>`).
-    pub(crate) fn new(origin: &str) -> Result<Session, String> {
+    /// `origin`: the game's loopback origin (`http://127.0.0.1:<port>`); `mcp`: whether the
+    /// local MCP bridge was asked for (it is started here, before the browser exists).
+    pub(crate) fn new(origin: &str, mcp: Option<Source>) -> Result<Session, String> {
         let test = match std::env::var(TEST_INPUT_ENV) {
             Ok(value) => {
                 let ms = value
@@ -82,7 +101,23 @@ impl Session {
             },
             Err(_) => None,
         };
-        let page_init = crate::mcp_rules::page_marker_script(origin, false).map(PageInit::new);
+        let mcp = mcp.and_then(|source| match crate::mcp::start(origin) {
+            Ok(bridge) => {
+                // The token stays in the session record only; it is never logged.
+                println!(
+                    "gate: mcp enabled source={source:?} pipe={} record={}",
+                    bridge.pipe,
+                    bridge.record.display()
+                );
+                Some(bridge)
+            },
+            Err(error) => {
+                println!("gate: mcp unavailable source={source:?} error={error}");
+                None
+            },
+        });
+        let page_init =
+            crate::mcp_rules::page_marker_script(origin, mcp.is_some()).map(PageInit::new);
         if page_init.is_none() {
             println!("gate: page markers unavailable error=unexpected origin {origin}");
         }
@@ -95,6 +130,7 @@ impl Session {
             loaded_at: None,
             input: Input::new(),
             test,
+            mcp,
             failed: false,
         })
     }
@@ -124,9 +160,17 @@ impl Session {
             return;
         };
         while let Some(message) = producer.poll_devtools_message() {
-            if let Ok(message) = serde_json::from_str::<Value>(&message) {
-                init.handle(&message);
+            let Ok(message) = serde_json::from_str::<Value>(&message) else {
+                continue;
+            };
+            if !init.handle(&message)
+                && let Some(bridge) = self.mcp.as_mut()
+            {
+                bridge.devtools_message(producer, &message);
             }
+        }
+        if let Some(bridge) = self.mcp.as_mut() {
+            bridge.expire(producer);
         }
         if self.navigated {
             return;
@@ -135,11 +179,12 @@ impl Session {
             return;
         };
         self.navigated = true;
+        let mcp = self.mcp.is_some();
         match outcome {
             Ok(identifier) => {
-                println!("gate: page markers registered identifier={identifier} mcp=false")
+                println!("gate: page markers registered identifier={identifier} mcp={mcp}")
             },
-            Err(error) => println!("gate: page markers unavailable error={error}"),
+            Err(error) => println!("gate: page markers unavailable mcp={mcp} error={error}"),
         }
         match producer.navigate_to_url(&self.game_url) {
             Ok(()) => println!("gate: game navigation url={}", self.game_url),
@@ -156,18 +201,28 @@ impl Session {
     /// Whether a navigation event for `url` belongs to the `about:blank` bootstrap document
     /// (the loop skips it; the origin checks apply to everything else).
     pub(crate) fn bootstrap_event(&mut self, url: &str) -> bool {
-        if self.page_init.is_none() {
-            return false;
-        }
-        if on_origin(&self.origin, url) {
+        if self.page_init.is_some() && on_origin(&self.origin, url) {
             self.game_started = true;
         }
-        !self.game_started && url == crate::mcp_rules::BOOTSTRAP_URL
+        let bootstrap = self.page_init.is_some()
+            && !self.game_started
+            && url == crate::mcp_rules::BOOTSTRAP_URL;
+        if !bootstrap && let Some(bridge) = self.mcp.as_mut() {
+            bridge.url = Some(url.to_owned());
+        }
+        bootstrap
     }
 
     /// Whether the page title may become the window title (the game document only).
     pub(crate) fn game_document(&self) -> bool {
         self.page_init.is_none() || self.game_started
+    }
+
+    /// A title of the game document (the MCP `state`).
+    pub(crate) fn title(&mut self, title: &str) {
+        if let Some(bridge) = self.mcp.as_mut() {
+            bridge.title = Some(title.to_owned());
+        }
     }
 
     /// The accepted game load-end: page input is forwarded from now on.
@@ -254,8 +309,12 @@ impl Session {
         }
     }
 
-    /// A console message of the page: the test hook's markers, from the game origin only.
-    pub(crate) fn console(&mut self, source: &str, message: &str) {
+    /// A console message of the page: kept for the MCP `state`; the test hook's markers,
+    /// from the game origin only.
+    pub(crate) fn console(&mut self, level: i32, source: &str, line: i32, message: &str) {
+        if let Some(bridge) = self.mcp.as_mut() {
+            bridge.console(level, message, source, line);
+        }
         if self.test.is_none() || !on_origin(&self.origin, source) {
             return;
         }
@@ -361,8 +420,109 @@ impl Session {
             .is_none_or(|t| t.click.finished() && t.key.finished() && t.wheel.finished())
     }
 
-    /// End of the loop: input counters, and a FAIL for an unfinished test hook.
+    /// One loop turn of the MCP bridge: a few queued requests.
+    pub(crate) fn mcp_step<P: CefSurfaceProducer>(
+        &mut self,
+        producer: &mut P,
+        window: &Window,
+        frames: &Frames,
+    ) {
+        let Some(bridge) = self.mcp.as_mut() else {
+            return;
+        };
+        for (call, reply) in bridge.take(crate::mcp::CALLS_PER_TURN) {
+            let method = call.method();
+            let ready = self.loaded_at.is_some();
+            let result = match call {
+                Call::State => Ok(self.mcp_state(window, frames)),
+                Call::Evaluate(_) if !self.navigated => {
+                    Err("the game page is not loaded yet".to_owned())
+                },
+                Call::Evaluate(expression) => {
+                    if let Some(bridge) = self.mcp.as_mut() {
+                        bridge.evaluate(producer, &expression, reply);
+                        println!("gate: mcp call method={method} queued=true");
+                    }
+                    continue;
+                },
+                // Page input starts with the accepted game load-end, as for real input.
+                Call::Click { .. } | Call::PressKey(_) | Call::TypeText(_) if !ready => {
+                    Err("input is not ready: the game has not finished loading".to_owned())
+                },
+                Call::Click { x, y } => crate::mcp::click_events(window, x, y)
+                    .and_then(|events| self.mcp_input(producer, window, &events)),
+                Call::PressKey(key) => {
+                    let events = crate::mcp::key_events(window.id(), key);
+                    self.mcp_input(producer, window, &events)
+                },
+                Call::TypeText(text) => {
+                    let events = [crate::mcp::text_event(window.id(), text)];
+                    self.mcp_input(producer, window, &events)
+                },
+            };
+            println!("gate: mcp call method={method} ok={}", result.is_ok());
+            reply.send(result);
+        }
+    }
+
+    fn mcp_input<P: CefSurfaceProducer>(
+        &mut self,
+        producer: &mut P,
+        window: &Window,
+        events: &[Event],
+    ) -> Result<Value, String> {
+        crate::mcp::forward(&mut self.input, producer, window, events, |line| {
+            println!("gate: {line}")
+        })
+    }
+
+    /// Host-side state for `state` (the Windows player's fields that exist here): no page
+    /// script runs for it.
+    fn mcp_state(&self, window: &Window, frames: &Frames) -> Value {
+        let mcp = self.mcp.as_ref();
+        let (width, height) = window.size();
+        let (pixel_width, pixel_height) = window.size_in_pixels();
+        json!({
+            "pid": std::process::id(),
+            "launch": "package",
+            "origin": self.origin,
+            "url": mcp.and_then(|m| m.url.clone()),
+            "title": mcp.and_then(|m| m.title.clone()),
+            "loaded": self.loaded_at.is_some(),
+            "page_capability": match self.page_init.as_ref().and_then(|p| p.registered) {
+                None => "pending",
+                Some(true) => "registered",
+                Some(false) => "unavailable",
+            },
+            "startup": if frames.shown { "released" } else { "loading" },
+            "input_ready": self.loaded_at.is_some(),
+            "window": {
+                "width": width,
+                "height": height,
+                "pixel_width": pixel_width,
+                "pixel_height": pixel_height,
+                "scale": window.display_scale(),
+            },
+            "frames": { "imported": frames.imported },
+            "input": {
+                "forwarded": self.input.forwarded,
+                "rejected": self.input.rejected,
+                "discarded": self.input.discarded,
+            },
+            "console": {
+                "recent": mcp.map(Bridge::recent_console),
+            },
+        })
+    }
+
+    /// End of the loop: input counters, and a FAIL for an unfinished test hook. The MCP
+    /// session record (and socket) is removed: discovery stops finding this game.
     pub(crate) fn finish(&mut self) {
+        if let Some(bridge) = self.mcp.take() {
+            let calls = bridge.calls;
+            drop(bridge);
+            println!("gate: mcp session removed calls={calls}");
+        }
         println!(
             "gate: game input forwarded={} rejected={} discarded={}",
             self.input.forwarded, self.input.rejected, self.input.discarded

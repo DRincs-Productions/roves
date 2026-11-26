@@ -24,9 +24,12 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 Linux feasibility gate
 # require the startup screen released by the first game frame (README "Startup screen"). A
 # second package built with the `steam` feature (README "Steam") ships libsteam_api.so next
 # to the gate ($ORIGIN) and runs the host API fixture once under the pinned GSE emulator
-# (App ID 480, offline; emulation, not the real Steam client). Also called by release.yml
-# (workflow_call) on a v*.*.* tag: the same build and checks, and its two archived packages
-# become the Linux release assets.
+# (App ID 480, offline; emulation, not the real Steam client). A third package, the
+# MCP-enabled development package (the standard one plus mcp/ and its `enabled` marker,
+# Windows player README "Local MCP bridge"), is smoked through its unix-socket bridge
+# (fixture interaction, packaged launch, bridge off/unavailable in the standard package).
+# Also called by release.yml (workflow_call) on a v*.*.* tag: the same build and checks, and
+# its three archived packages become the Linux release assets.
 
 on:
   push:
@@ -51,6 +54,9 @@ on:
       - 'support/cef-netrender-probe/src/input.rs'
       - 'support/cef-netrender-probe/src/page_init.rs'
       - 'support/cef-netrender-probe/src/mcp_rules.rs'
+      # The optional local MCP bridge (`#[path]`) and its Node server, smoke test and fixture.
+      - 'support/cef-netrender-probe/src/mcp.rs'
+      - 'support/cef-netrender-probe/mcp/**'
       - 'support/cef-netrender-probe/src/icon_rules.rs'
       - 'support/cef-netrender-probe/src/window_icon.rs'
       - 'icon.png'
@@ -100,6 +106,7 @@ jobs:
             support/vendor/wgpu-weld
             support/cef-window-probe/src
             support/cef-netrender-probe/src
+            support/cef-netrender-probe/mcp
             support/cef-macos-gate/src
             support/cef-macos-gate/player-fixture
             support/cef-netrender-probe/host-api-fixture
@@ -833,6 +840,132 @@ jobs:
             echo "::notice::Steam host API verified under EMULATION (GSE $GSE_TAG, App ID 480), not against the real Steam client"
           fi
           test "$failed" = 0
+      # ── Local MCP bridge (support/cef-netrender-probe/mcp/README.md) ────────────────
+      # The MCP-enabled development package: a copy of the standard package (same executable,
+      # same packaged template; chrome-sandbox root 4755 again, cp cannot keep its owner) plus
+      # mcp/ (server.mjs, README, package files and its `npm ci --omit=dev` node_modules) and
+      # the marker mcp/enabled next to the executable, which turns the bridge on for every
+      # launch. The standard package keeps the bridge off. Setuid layer 1, as the other
+      # packaged runs.
+      - name: assemble the MCP-enabled package
+        id: mcp_package
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          # The bridge's pure rules stand-alone (std only), including the unix session
+          # directory (0700, owner) and record (0600) tests.
+          rules="$RUNNER_TEMP/mcp-rules-tests"
+          mkdir -p "$rules"
+          rustc --edition 2024 --test support/cef-netrender-probe/src/mcp_rules.rs -o "$rules/mcp_rules"
+          "$rules/mcp_rules"
+          out="$RUNNER_TEMP/gate-app-mcp"
+          test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
+          cp -a "$GATE_DIR" "$out"
+          sudo chown root:root "$out/chrome-sandbox"
+          sudo chmod 4755 "$out/chrome-sandbox"
+          mcp="$out/mcp"
+          mkdir -p "$mcp"
+          for file in server.mjs package.json package-lock.json README.md; do
+            cp "support/cef-netrender-probe/mcp/$file" "$mcp/"
+          done
+          (cd "$mcp" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund)
+          touch "$mcp/enabled"
+          # Discovery smoke of the packaged server without a game (tool list, clean error).
+          node support/cef-netrender-probe/mcp/smoke.mjs list-only "$mcp/server.mjs"
+          for required in roves-cef-linux-gate libcef.so game/index.html mcp/server.mjs mcp/enabled mcp/README.md \
+              mcp/node_modules/@modelcontextprotocol/server/package.json; do
+            test -e "$out/$required" || { echo "::error::MCP package lacks $required"; exit 1; }
+          done
+          cmp -s "$GATE" "$out/roves-cef-linux-gate" \
+            || { echo "::error::the MCP package executable differs from the standard package"; exit 1; }
+          test ! -e "$GATE_DIR/mcp" || { echo "::error::the standard package contains mcp/"; exit 1; }
+          stat -c '%U %a %n' "$out/chrome-sandbox"
+          echo "::notice::MCP package: $(cd "$mcp" && npm ls --omit=dev --depth=0 2>/dev/null | tail -n +2 | tr -d '\n')"
+          echo "MCP_GATE_DIR=$out" >> "$GITHUB_ENV"
+      # Real interaction through the unix-socket bridge: the MCP fixture
+      # (support/cef-netrender-probe/mcp/fixture) temporarily as the MCP package's game,
+      # launched with --roves-mcp under Xvfb. Required (smoke.mjs fixture): session record and
+      # socket in the 0700 per-user directory ($XDG_RUNTIME_DIR/roves/mcp, else
+      # ~/.local/state/roves/mcp; both 0600), two unauthenticated connections answered with
+      # nothing, discovery by PID, state, the isMcpEnabled() marker (entry script, top level
+      # only), evaluation (values, exception, Promise refused, CSP kept for eval), a trusted
+      # DOM click, ArrowRight keydown/keyup, typed text, out-of-window click and unlisted key
+      # refused, clean exit, record and socket removed, token not logged.
+      - name: MCP smoke on the fixture (unix socket)
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/mcp-fixture-run"
+          game="$MCP_GATE_DIR/game"
+          test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
+          mkdir -p "$out"
+          mv "$game" "$out/template-game"
+          restore() { rm -rf "$game"; mv "$out/template-game" "$game"; }
+          trap restore EXIT
+          cp -a support/cef-netrender-probe/mcp/fixture "$game"
+          echo "::notice::session directory base XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}"
+          set +e
+          timeout -k 10 420 xvfb-run -a -s "-screen 0 1280x800x24" node support/cef-netrender-probe/mcp/smoke.mjs fixture \
+            "$MCP_GATE_DIR/mcp/server.mjs" "$MCP_GATE_DIR/roves-cef-linux-gate" \
+            support/cef-netrender-probe/mcp/fixture "$out"
+          code=$?
+          set -e
+          grep -E '^gate: (mcp (enabled|unavailable|session)|page markers|load-end|NO_|PASS|FAIL|exit code=)' "$out/game.log" \
+            | while read -r line; do echo "::notice::$line"; done || true
+          sleep 2
+          if pgrep -fl "roves-cef-linux-gate"; then echo "::error::player processes still running after exit"; code=1; fi
+          test "$code" = 0 || { echo "::error::MCP fixture smoke failed (exit $code)"; exit 1; }
+          echo "::notice::MCP fixture smoke (Linux): discovery, authentication, state, isMcpEnabled() marker, evaluation, click, key and text delivered through the unix socket"
+      # isMcpEnabled() negative cases on the same fixture with the STANDARD package (no
+      # mcp/enabled): bridge off (no --roves-mcp), and --roves-mcp while the session directory
+      # cannot be created (XDG_RUNTIME_DIR points at a file). Required (smoke.mjs disabled):
+      # game loaded, MCP marker absent in the entry script and the child frame, host marker
+      # present, no session record, no FAIL line, clean exit.
+      - name: MCP disabled smoke on the fixture (standard package)
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/mcp-disabled-run"
+          game="$GATE_DIR/game"
+          test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
+          mkdir -p "$out"
+          mv "$game" "$out/template-game"
+          restore() { rm -rf "$game"; mv "$out/template-game" "$game"; }
+          trap restore EXIT
+          cp -a support/cef-netrender-probe/mcp/fixture "$game"
+          set +e
+          timeout -k 10 420 xvfb-run -a -s "-screen 0 1280x800x24" node support/cef-netrender-probe/mcp/smoke.mjs disabled \
+            "$MCP_GATE_DIR/mcp/server.mjs" "$GATE" support/cef-netrender-probe/mcp/fixture "$out"
+          code=$?
+          set -e
+          for case in off unavailable; do
+            test -f "$out/$case/game.log" || continue
+            grep -E '^gate: (mcp |page markers|load-end|exit code=)|roves-mcp-(entry|frame)' "$out/$case/game.log" \
+              | while read -r line; do echo "::notice::$case $line"; done || true
+          done
+          sleep 2
+          if pgrep -fl "roves-cef-linux-gate"; then echo "::error::player processes still running after exit"; code=1; fi
+          test "$code" = 0 || { echo "::error::MCP disabled smoke failed (exit $code)"; exit 1; }
+      # Packaged launch: the MCP package's executable started directly (the marker turns the
+      # bridge on) with the packaged template, discovered without a PID. Required: state and
+      # evaluation on the game's origin; click forwarded once the game accepts input,
+      # otherwise refused as not ready; record and socket removed after exit.
+      - name: MCP smoke on the packaged launch
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/mcp-package-run"
+          test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
+          set +e
+          timeout -k 10 300 xvfb-run -a -s "-screen 0 1280x800x24" node support/cef-netrender-probe/mcp/smoke.mjs package \
+            "$MCP_GATE_DIR/mcp/server.mjs" "$MCP_GATE_DIR" "$out"
+          code=$?
+          set -e
+          grep -E '^gate: (mcp (enabled|unavailable|session)|load-end|startup screen released|NO_|PASS|FAIL|exit code=)' "$out/game.log" \
+            | while read -r line; do echo "::notice::$line"; done || true
+          sleep 2
+          if pgrep -fl "roves-cef-linux-gate"; then echo "::error::player processes still running after exit"; code=1; fi
+          test "$code" = 0 || { echo "::error::MCP package smoke failed (exit $code)"; exit 1; }
       - name: archive the gate directory
         if: always() && env.GATE_DIR != ''
         shell: bash
@@ -843,6 +976,10 @@ jobs:
         if: always() && env.STEAM_GATE_DIR != ''
         shell: bash
         run: tar -C "$STEAM_GATE_DIR/.." -czf "$RUNNER_TEMP/roves-cef-linux-gate-x64-steam.tar.gz" "$(basename "$STEAM_GATE_DIR")"
+      - name: archive the MCP package
+        if: always() && env.MCP_GATE_DIR != ''
+        shell: bash
+        run: tar -C "$MCP_GATE_DIR/.." -czf "$RUNNER_TEMP/roves-cef-linux-gate-x64-mcp.tar.gz" "$(basename "$MCP_GATE_DIR")"
       - name: upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -857,6 +994,9 @@ jobs:
             ${{ runner.temp }}/player-profile/*.log
             ${{ runner.temp }}/player-fixture/*.log
             ${{ runner.temp }}/player-fixture/sink-inputs.txt
+            ${{ runner.temp }}/mcp-fixture-run/game.log
+            ${{ runner.temp }}/mcp-package-run/game.log
+            ${{ runner.temp }}/mcp-disabled-run/*/game.log
             ${{ runner.temp }}/player-last-frame.bmp
             ${{ runner.temp }}/player-game-sha256.txt
             ${{ runner.temp }}/vnt-build-info.txt
@@ -879,4 +1019,12 @@ jobs:
         with:
           name: cef-linux-gate-x64-steam
           path: ${{ runner.temp }}/roves-cef-linux-gate-x64-steam.tar.gz
+          if-no-files-found: warn
+      # The MCP-enabled development package (mcp/ next to the gate, same executable and game).
+      - name: upload the MCP package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-linux-gate-x64-mcp
+          path: ${{ runner.temp }}/roves-cef-linux-gate-x64-mcp.tar.gz
           if-no-files-found: warn

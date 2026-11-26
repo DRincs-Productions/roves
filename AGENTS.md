@@ -578,9 +578,9 @@ ask rather than silently leaving `main` ahead of the last cut tag indefinitely.*
 `.github/workflows/release.yml` publishes the CEF player release. On a `v*.*.*` tag it calls
 the three player workflows (`cef-netrender-probe.yml` Windows with `release: true`,
 `cef-macos-gate.yml`, `cef-linux-gate.yml`), which build and verify the standard, Steam and
-(Windows only) MCP packages end to end; its `publish` job zips them, checks every zip and
-creates the GitHub Release with eight assets: `roves_shell_{windows,macos,linux}.zip`, the
-same three with `_steam`, `roves_shell_windows_mcp.zip` and `SHA256SUMS.txt`. Each zip is a
+MCP packages end to end; its `publish` job zips them, checks every zip and creates the
+GitHub Release with ten assets: `roves_shell_{windows,macos,linux}.zip`, the same three with
+`_steam` and with `_mcp` (development only), and `SHA256SUMS.txt`. Each zip is a
 runnable player with the sample game in `game/`; Packmaster and roves-action use it as the
 base and replace `game/` with the user's build. A push to a `release-check/<name>` branch
 runs the same pipeline as a dry run (zips uploaded as the `roves-release-dry-run` artifact,

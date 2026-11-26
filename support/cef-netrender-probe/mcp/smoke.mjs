@@ -1,38 +1,58 @@
-// Smoke test of the Roves local MCP bridge against a real game process (Windows).
+// Smoke test of the Roves local MCP bridge against a real game process (Windows, macOS,
+// Linux).
 //
 //   node smoke.mjs list-only <server.mjs>
-//   node smoke.mjs fixture <server.mjs> <play.exe> <fixture dir> <output dir>
-//   node smoke.mjs package <server.mjs> <package dir> <output dir>
-//   node smoke.mjs disabled <server.mjs> <plain play.exe> <fixture dir> <output dir>
+//   node smoke.mjs fixture <server.mjs> <game executable> <fixture dir> <output dir>
+//   node smoke.mjs package <server.mjs> <package> <output dir>
+//   node smoke.mjs disabled <server.mjs> <plain game executable> <fixture dir> <output dir>
 //
-// fixture: --roves-game-dir=<fixture> --roves-mcp; discovery by PID, authentication refusal,
+// Players: Windows `play.exe` (game dir by switch, log by --roves-log); macOS
+// `<app>.app/Contents/MacOS/<name>` and Linux `<dir>/roves-cef-linux-gate`, which play only
+// their packaged game (Contents/Resources/game, game/ next to the executable), take their
+// test settings from ROVES_GATE_* variables and log `gate:` lines on stdout (captured here as
+// game.log; on Linux run this script under xvfb-run). On macOS/Linux, fixture and disabled
+// need <fixture dir> already copied as the package's game (checked here); <package> is the
+// `.app` on macOS and the package folder elsewhere.
+//
+// fixture: the fixture with --roves-mcp; discovery by PID, authentication refusal,
 //          state, the isMcpEnabled() marker (true and read-only in the entry script of the
 //          top-level document, absent in a same-origin child frame, no other bridge global),
 //          evaluation (values, objects by value, errors, Promise refusal distinct
 //          from a plain {}, non-JSON symbol refused, page CSP kept), click, key and
 //          text delivered to the page, clean exit and session removal.
-// disabled: the plain package's play.exe (no mcp\enabled) on the fixture, twice: without
-//          --roves-mcp, and with --roves-mcp while the bridge cannot start (LOCALAPPDATA
-//          points at a file). Both must load the game with the MCP marker absent in the
-//          entry script and the child frame (the host API marker __ROVES__ present), publish
-//          no session record and exit 0.
-// package: the package's play.exe launched directly (the package marker turns MCP on);
+// disabled: the plain package's player (no mcp/enabled) on the fixture, twice: without
+//          --roves-mcp, and with --roves-mcp while the bridge cannot start (its session
+//          directory cannot be created: LOCALAPPDATA or XDG_RUNTIME_DIR points at a file, on
+//          macOS a file stands at the directory's path). Both must load the game with the MCP
+//          marker absent in the entry script and the child frame (the host API marker
+//          __ROVES__ present), publish no session record and exit cleanly.
+// package: the package's player launched directly (the package marker turns MCP on);
 //          discovery without a PID, state and evaluation on the packaged game; interaction
-//          is required to succeed only if the startup screen was released (real GPU),
-//          otherwise to be refused as not ready (WARP); clean exit and session removal.
+//          is required to succeed only if the game accepts input yet, otherwise to be refused
+//          as not ready; clean exit and session removal.
+//
+// Exit codes: 0, or on macOS/Linux 2 when the runner produced no frame (the player logs
+// NO_ACCELERATED_FRAME / NO_FRAME; the bridge checks still ran). On Windows, package mode
+// expects 2 when the startup screen was never released (WARP), as play.exe reports it.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmdirSync, rmSync, statSync,
+  writeFileSync,
+} from "node:fs";
 import { createConnection } from "node:net";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 
 const [mode, serverPath, ...rest] = process.argv.slice(2);
-const usage = "Usage: node smoke.mjs list-only <server.mjs> | fixture <server.mjs> <play.exe> " +
-  "<fixture dir> <output dir> | package <server.mjs> <package dir> <output dir> | " +
-  "disabled <server.mjs> <plain play.exe> <fixture dir> <output dir>";
+const usage = "Usage: node smoke.mjs list-only <server.mjs> | fixture <server.mjs> <game executable> " +
+  "<fixture dir> <output dir> | package <server.mjs> <package> <output dir> | " +
+  "disabled <server.mjs> <plain game executable> <fixture dir> <output dir>";
+const WINDOWS = process.platform === "win32";
+/** Prefix of the player's own log lines (not page console text). */
+const HOST = WINDOWS ? "roves-cef-nr " : "gate: ";
 const MARKER = "__ROVES_MCP__";
 assert.ok(serverPath, usage);
 const TOOLS = ["click", "evaluate_script", "get_state", "press_key", "type_text"];
@@ -113,9 +133,42 @@ async function until(what, ms, probe) {
   throw new Error(`timed out waiting for ${what}; last: ${JSON.stringify(last)}`);
 }
 
+/** The per-user session directory (server.mjs and mcp_rules.rs `record_dir`). */
+function sessionDirectory(env = process.env) {
+  const absolute = (name) => (env[name] && isAbsolute(env[name]) ? env[name] : undefined);
+  if (WINDOWS) {
+    assert.ok(env.LOCALAPPDATA, "LOCALAPPDATA is not set");
+    return join(env.LOCALAPPDATA, "Roves", "mcp");
+  }
+  if (process.platform === "darwin") {
+    assert.ok(absolute("HOME"), "HOME is not an absolute path");
+    return join(env.HOME, "Library", "Application Support", "Roves", "mcp");
+  }
+  if (absolute("XDG_RUNTIME_DIR")) return join(env.XDG_RUNTIME_DIR, "roves", "mcp");
+  assert.ok(absolute("HOME"), "neither XDG_RUNTIME_DIR nor HOME is an absolute path");
+  return join(env.HOME, ".local", "state", "roves", "mcp");
+}
+
 function recordPath(pid) {
-  assert.ok(process.env.LOCALAPPDATA, "LOCALAPPDATA is not set");
-  return join(process.env.LOCALAPPDATA, "Roves", "mcp", `${pid}.json`);
+  return join(sessionDirectory(), `${pid}.json`);
+}
+
+/**
+ * Layout of a package from its player executable: { exe, marker, game }. Windows and Linux:
+ * everything next to the executable; macOS: `<app>/Contents/{MacOS/<name>,Resources/...}`.
+ */
+function layout(exe) {
+  exe = resolve(exe);
+  const resources = process.platform === "darwin" ? join(dirname(dirname(exe)), "Resources") : dirname(exe);
+  return { exe, marker: join(resources, "mcp", "enabled"), game: join(resources, "game") };
+}
+
+/** The player executable of a package (`.app` on macOS, folder elsewhere). */
+function packageExe(pkg) {
+  pkg = resolve(pkg);
+  if (WINDOWS) return join(pkg, "play.exe");
+  if (process.platform === "darwin") return join(pkg, "Contents", "MacOS", basename(pkg, ".app"));
+  return join(pkg, "roves-cef-linux-gate");
 }
 
 async function waitRecord(pid) {
@@ -129,9 +182,18 @@ async function waitRecord(pid) {
 function checkRecord(record, pid) {
   assert.equal(record.version, 1);
   assert.equal(record.pid, pid);
-  const prefix = String.raw`\\.\pipe\roves-mcp-` + pid + "-";
-  assert.ok(record.pipe.startsWith(prefix) && /^[0-9a-f]{32}$/.test(record.pipe.slice(prefix.length)),
-    `unexpected pipe name ${record.pipe}`);
+  if (WINDOWS) {
+    const prefix = String.raw`\\.\pipe\roves-mcp-` + pid + "-";
+    assert.ok(record.pipe.startsWith(prefix) && /^[0-9a-f]{32}$/.test(record.pipe.slice(prefix.length)),
+      `unexpected pipe name ${record.pipe}`);
+  } else {
+    // The socket next to the record, both private to this user (0600 in a 0700 directory).
+    assert.equal(record.pipe, join(sessionDirectory(), `${pid}.sock`));
+    const mode = (path) => statSync(path).mode & 0o777;
+    assert.equal(mode(sessionDirectory()), 0o700, "session directory mode");
+    assert.equal(mode(recordPath(pid)), 0o600, "session record mode");
+    assert.equal(mode(record.pipe), 0o600, "socket mode");
+  }
   assert.match(record.token, /^[0-9a-f]{64}$/);
   assert.match(record.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
 }
@@ -159,12 +221,56 @@ async function waitExit(game, ms) {
   return code;
 }
 
-function launch(exe, args, out, env = process.env) {
+/**
+ * Starts a player. Windows: every setting is a switch and the log is --roves-log. macOS/Linux:
+ * an isolated profile, test settings in ROVES_GATE_* and stdout/stderr captured as the log.
+ * `game` (Windows only): the game directory; `mcp`: add --roves-mcp.
+ */
+function launch(exe, { out, gameLog, game, mcp = false, autoCloseMs, timeoutMs, env = process.env }) {
   mkdirSync(out, { recursive: true });
-  const game = spawn(exe, args, { cwd: out, stdio: "ignore", windowsHide: false, env });
-  game.on("error", (error) => log(`launch error ${error.message}`));
-  log(`launched pid=${game.pid} ${exe}`);
-  return game;
+  let args;
+  let stdio = "ignore";
+  let fd;
+  if (WINDOWS) {
+    args = [
+      ...(game ? [`--roves-game-dir=${resolve(game)}`] : ["--roves-isolated-profile", "--roves-no-error-dialog"]),
+      ...(mcp ? ["--roves-mcp"] : []), `--roves-auto-close-ms=${autoCloseMs}`,
+      `--roves-timeout-ms=${timeoutMs}`, `--roves-log=${gameLog}`,
+      ...(game ? [`--roves-cache-dir=${join(out, "cache")}`, `--log-file=${join(out, "cef-debug.log")}`] : []),
+    ];
+  } else {
+    args = ["--roves-isolated-profile", ...(mcp ? ["--roves-mcp"] : [])];
+    env = {
+      ...env,
+      ROVES_GATE_TIMEOUT_SECS: String(Math.ceil(timeoutMs / 1000)),
+      ROVES_GATE_AUTO_CLOSE_MS: String(autoCloseMs),
+    };
+    fd = openSync(gameLog, "w");
+    stdio = ["ignore", fd, fd];
+  }
+  const child = spawn(exe, args, { cwd: out, stdio, windowsHide: false, env });
+  if (fd !== undefined) closeSync(fd);
+  child.on("error", (error) => log(`launch error ${error.message}`));
+  log(`launched pid=${child.pid} ${exe}`);
+  return child;
+}
+
+/**
+ * The exit code a clean run must end with: 0; on macOS/Linux 2 when the runner gave no
+ * frame (the player says NO_ACCELERATED_FRAME or NO_FRAME).
+ */
+function cleanExit(text) {
+  return !WINDOWS && /^gate: NO_(ACCELERATED_)?FRAME/m.test(text) ? 2 : 0;
+}
+
+/** macOS/Linux: the package's game must already be the fixture (the workflow copies it). */
+function checkFixtureGame(exe, fixtureDir) {
+  if (WINDOWS) return;
+  const game = layout(exe).game;
+  for (const file of readdirSync(resolve(fixtureDir))) {
+    assert.deepEqual(readFileSync(join(game, file)), readFileSync(join(resolve(fixtureDir), file)),
+      `${join(game, file)} is not the fixture's ${file}: copy ${fixtureDir} as the package's game`);
+  }
 }
 
 function checkLog(path, record, source) {
@@ -178,13 +284,11 @@ function checkLog(path, record, source) {
 
 async function fixture([exe, fixtureDir, out]) {
   assert.ok(exe && fixtureDir && out, usage);
+  checkFixtureGame(exe, fixtureDir);
   const gameLog = join(resolve(out), "game.log");
-  const game = launch(resolve(exe), [
-    `--roves-game-dir=${resolve(fixtureDir)}`, "--roves-mcp", "--roves-auto-close-ms=45000",
-    "--roves-timeout-ms=90000", `--roves-log=${gameLog}`,
-    `--roves-cache-dir=${join(resolve(out), "cache")}`,
-    `--log-file=${join(resolve(out), "cef-debug.log")}`,
-  ], resolve(out));
+  const game = launch(resolve(exe), {
+    out: resolve(out), gameLog, game: fixtureDir, mcp: true, autoCloseMs: 45_000, timeoutMs: 90_000,
+  });
   let client;
   try {
     const record = await waitRecord(game.pid);
@@ -201,7 +305,7 @@ async function fixture([exe, fixtureDir, out]) {
     });
     assert.equal(state.pid, game.pid);
     assert.equal(state.origin, record.origin);
-    assert.equal(state.launch, "game-dir");
+    assert.equal(state.launch, WINDOWS ? "game-dir" : "package");
     log(`state ${JSON.stringify({ ...state, console: undefined })}`);
 
     const evaluate = (expression) => client.tool("evaluate_script", { expression });
@@ -301,10 +405,11 @@ async function fixture([exe, fixtureDir, out]) {
     await client.stop();
     client = undefined;
 
-    const code = await waitExit(game, 90_000);
+    const code = await waitExit(game, 150_000);
     log(`game exit code=${code}`);
-    assert.equal(code, 0);
+    assert.equal(code, cleanExit(readFileSync(gameLog, "utf8")));
     assert.ok(!existsSync(recordPath(game.pid)), "session record left behind");
+    if (!WINDOWS) assert.ok(!existsSync(record.pipe), "socket left behind");
     const text = checkLog(gameLog, record, "Switch");
     assert.ok(!/ FAIL /.test(text), "FAIL line in the game log");
     assert.match(text, /page markers registered identifier=\S+ mcp=true/);
@@ -325,13 +430,10 @@ async function fixture([exe, fixtureDir, out]) {
 
 async function packaged([pkg, out]) {
   assert.ok(pkg && out, usage);
-  const marker = join(resolve(pkg), "mcp", "enabled");
+  const { exe, marker } = layout(packageExe(pkg));
   assert.ok(existsSync(marker), `missing package marker ${marker}`);
   const gameLog = join(resolve(out), "game.log");
-  const game = launch(join(resolve(pkg), "play.exe"), [
-    "--roves-isolated-profile", "--roves-no-error-dialog", "--roves-timeout-ms=60000",
-    "--roves-auto-close-ms=15000", `--roves-log=${gameLog}`,
-  ], resolve(out));
+  const game = launch(exe, { out: resolve(out), gameLog, autoCloseMs: 15_000, timeoutMs: 60_000 });
   let client;
   try {
     // Discovery without a PID: the server finds the only running game.
@@ -379,9 +481,16 @@ async function packaged([pkg, out]) {
     await client.stop();
     client = undefined;
     const code = await waitExit(game, 120_000);
-    const released = /startup released /.test(readFileSync(gameLog, "utf8"));
-    log(`game exit code=${code} released=${released}`);
-    assert.equal(code, released ? 0 : 2);
+    const text = readFileSync(gameLog, "utf8");
+    if (WINDOWS) {
+      const released = /startup released /.test(text);
+      log(`game exit code=${code} released=${released}`);
+      assert.equal(code, released ? 0 : 2);
+    } else {
+      log(`game exit code=${code}`);
+      assert.equal(code, cleanExit(text));
+      assert.ok(!existsSync(record.pipe), "socket left behind");
+    }
     assert.ok(!existsSync(recordPath(game.pid)), "session record left behind");
     checkLog(gameLog, record, "Package");
     log("package smoke passed");
@@ -397,51 +506,71 @@ async function packaged([pkg, out]) {
  */
 async function disabled([exe, fixtureDir, out]) {
   assert.ok(exe && fixtureDir && out, usage);
-  const marker = join(dirname(resolve(exe)), "mcp", "enabled");
-  assert.ok(!existsSync(marker), `${marker} exists: use the plain package's play.exe`);
-  const blocker = join(resolve(out), "localappdata-is-a-file");
+  const { marker } = layout(exe);
+  assert.ok(!existsSync(marker), `${marker} exists: use the plain package's player`);
+  checkFixtureGame(exe, fixtureDir);
+  const blocker = join(resolve(out), "session-dir-is-a-file");
   mkdirSync(resolve(out), { recursive: true });
   writeFileSync(blocker, "not a directory\n");
-  const cases = [
-    { name: "off", args: [], env: process.env },
-    { name: "unavailable", args: ["--roves-mcp"], env: { ...process.env, LOCALAPPDATA: blocker } },
-  ];
-  for (const { name, args, env } of cases) {
-    const dir = join(resolve(out), name);
-    const gameLog = join(dir, "game.log");
-    const game = launch(resolve(exe), [
-      `--roves-game-dir=${resolve(fixtureDir)}`, ...args, "--roves-auto-close-ms=8000",
-      "--roves-timeout-ms=60000", `--roves-log=${gameLog}`,
-      `--roves-cache-dir=${join(dir, "cache")}`, `--log-file=${join(dir, "cef-debug.log")}`,
-    ], dir, env);
-    try {
-      const code = await waitExit(game, 90_000);
-      const text = readFileSync(gameLog, "utf8");
-      log(`${name}: game exit code=${code}`);
-      assert.equal(code, 0);
-      assert.ok(!/ FAIL /.test(text), `${name}: FAIL line in the game log`);
-      assert.ok(!existsSync(recordPath(game.pid)), `${name}: session record published`);
-      assert.match(text, /load-end status=200 url=http:\/\/127\.0\.0\.1:\d+\/ ok=true/);
-      assert.match(text, /message="roves-mcp-entry enabled=false"/);
-      assert.match(text, /message="roves-mcp-frame enabled=false"/);
-      // The host API marker (`isAvailable()`) does not depend on the bridge.
-      assert.match(text, /page markers registered identifier=\S+ mcp=false/);
-      assert.match(text, /message="roves-host-entry transport=http api=\/__roves\/ frozen=true"/);
-      // Host lines only (`roves-cef-nr <event>`): the fixture's own title, "roves mcp
-      // fixture", is logged as `roves-cef-nr title roves mcp fixture` and is not a bridge line.
-      assert.ok(!/^roves-cef-nr mcp (enabled|page capability|bootstrap)/m.test(text),
-        `${name}: bridge lines in the game log`);
-      const bridgeLines = text.split(/\r?\n/).filter((line) => line.startsWith("roves-cef-nr mcp "));
-      if (name === "off") {
-        assert.deepEqual(bridgeLines, [], "off: mcp line in the game log");
-      } else {
-        assert.equal(bridgeLines.length, 1, `unavailable: ${JSON.stringify(bridgeLines)}`);
-        assert.match(bridgeLines[0], /^roves-cef-nr mcp unavailable source=Switch error=/);
-      }
-      log(`${name}: MCP marker absent, host marker present`);
-    } finally {
-      if (game.exitCode === null) game.kill();
+  // Unavailable: the session directory cannot be created. Windows/Linux: its base variable
+  // points at a file. macOS (HOME must stay usable): a file stands at the directory's own
+  // path, only when nothing is there yet or it is an empty directory, and is removed after.
+  let unavailable;
+  let cleanup = () => {};
+  if (WINDOWS) {
+    unavailable = { ...process.env, LOCALAPPDATA: blocker };
+  } else if (process.platform === "linux") {
+    unavailable = { ...process.env, XDG_RUNTIME_DIR: blocker };
+  } else {
+    const dir = sessionDirectory();
+    if (existsSync(dir) && statSync(dir).isDirectory() && readdirSync(dir).length === 0) rmdirSync(dir);
+    if (!existsSync(dir)) {
+      mkdirSync(dirname(dir), { recursive: true });
+      writeFileSync(dir, "not a directory\n");
+      cleanup = () => rmSync(dir, { force: true });
+      unavailable = process.env;
+    } else {
+      console.log(`::notice::${dir} holds other sessions: the unavailable case is skipped`);
     }
+  }
+  const cases = [{ name: "off", mcp: false, env: process.env }];
+  if (unavailable) cases.push({ name: "unavailable", mcp: true, env: unavailable });
+  try {
+    for (const { name, mcp, env } of cases) {
+      const dir = join(resolve(out), name);
+      const gameLog = join(dir, "game.log");
+      const game = launch(resolve(exe), {
+        out: dir, gameLog, game: fixtureDir, mcp, autoCloseMs: 8_000, timeoutMs: 60_000, env,
+      });
+      try {
+        const code = await waitExit(game, 90_000);
+        const text = readFileSync(gameLog, "utf8");
+        log(`${name}: game exit code=${code}`);
+        assert.equal(code, cleanExit(text));
+        assert.ok(!/ FAIL /.test(text), `${name}: FAIL line in the game log`);
+        assert.ok(!existsSync(recordPath(game.pid)), `${name}: session record published`);
+        assert.match(text, /load-end status=200 url=http:\/\/127\.0\.0\.1:\d+\/ ok=true/);
+        assert.match(text, /message="roves-mcp-entry enabled=false"/);
+        assert.match(text, /message="roves-mcp-frame enabled=false"/);
+        // The host API marker (`isAvailable()`) does not depend on the bridge.
+        assert.match(text, /page markers registered identifier=\S+ mcp=false/);
+        assert.match(text, /message="roves-host-entry transport=http api=\/__roves\/ frozen=true"/);
+        // Host lines only (`<host prefix>mcp ...`): the fixture's own title, "roves mcp
+        // fixture", is logged as a title line and is not a bridge line.
+        const bridgeLines = text.split(/\r?\n/).filter((line) => line.startsWith(`${HOST}mcp `));
+        if (name === "off") {
+          assert.deepEqual(bridgeLines, [], "off: mcp line in the game log");
+        } else {
+          assert.equal(bridgeLines.length, 1, `unavailable: ${JSON.stringify(bridgeLines)}`);
+          assert.ok(bridgeLines[0].startsWith(`${HOST}mcp unavailable source=Switch error=`), bridgeLines[0]);
+        }
+        log(`${name}: MCP marker absent, host marker present`);
+      } finally {
+        if (game.exitCode === null) game.kill();
+      }
+    }
+  } finally {
+    cleanup();
   }
   log("disabled smoke passed");
 }

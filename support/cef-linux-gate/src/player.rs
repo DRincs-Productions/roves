@@ -54,7 +54,7 @@ use crate::{
         Gpu, Pacer, distinct_colours, env_u64, frame_pixels_bgra, renderer_sandboxed,
         report_acquire_error, write_bmp,
     },
-    session::Session,
+    session::{Frames, Session},
 };
 
 /// Console lines printed before only counting them.
@@ -115,11 +115,12 @@ pub(crate) fn drive(
     timeout: Duration,
     game_exit: &std::sync::OnceLock<&'static str>,
     steam: Option<&crate::host_api::SteamHandle>,
+    mcp: Option<crate::mcp::Source>,
 ) -> Result<(i32, LinuxCefProducer), String> {
     let auto_close = env_u64("ROVES_GATE_AUTO_CLOSE_MS").map(Duration::from_millis);
     let dump = std::env::var_os("ROVES_GATE_FRAME_DUMP").map(PathBuf::from);
     let size = gpu.size();
-    let mut session = Session::new(origin)?;
+    let mut session = Session::new(origin, mcp)?;
     let url = session.initial_url();
     let mut scale = window.display_scale();
     let creating = Instant::now();
@@ -281,6 +282,7 @@ pub(crate) fn drive(
                     println!("gate: title {title:?}");
                     if session.game_document() {
                         let _ = window.set_title(&title);
+                        session.title(&title);
                     }
                 },
                 NavigationEvent::ConsoleMessage {
@@ -291,7 +293,7 @@ pub(crate) fn drive(
                 } => {
                     console_lines += 1;
                     *console_levels.entry(level).or_default() += 1;
-                    session.console(&source, &message);
+                    session.console(level, &source, line, &message);
                     if console_lines <= CONSOLE_LOG_CAP {
                         let message: String = message.chars().take(CONSOLE_MESSAGE_MAX).collect();
                         println!(
@@ -395,6 +397,14 @@ pub(crate) fn drive(
             schedule_close(auto_close, anchor, &mut close_at);
         }
         session.per_turn(&mut producer, mouse, sdl_events, window);
+        session.mcp_step(
+            &mut producer,
+            window,
+            &Frames {
+                imported,
+                shown: first_game_frame.is_some(),
+            },
+        );
         // Frames before the game's first one (the page-marker bootstrap document) stay
         // behind the startup screen.
         if gpu.present(first_game_frame.and(frame.as_ref())) {

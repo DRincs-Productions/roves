@@ -287,6 +287,58 @@ cache under the temporary directory, removed at exit (CI's first packaged run).
 Limitations: moving or renaming the directory starts a new profile; the lower-casing (a
 Windows rule) makes two install paths that differ only in case share a profile.
 
+## Local MCP bridge
+
+Development only, off by default: the Windows player's local MCP bridge
+(`support/cef-netrender-probe/src/mcp.rs` and `mcp_rules.rs` through `#[path]`; Windows
+player README "Local MCP bridge"; client instructions in
+`support/cef-netrender-probe/mcp/README.md`). A packaged-game launch starts it with
+`--roves-mcp`, or when the package contains `mcp/enabled` next to the executable (only the
+MCP-enabled development package has it); `--roves-mcp` without a packaged game is a usage
+error. Off means no socket, no session record and no `gate: mcp` line.
+
+- **Transport.** Before the browser is created `session.rs` starts the bridge: the per-user
+  session directory `$XDG_RUNTIME_DIR/roves/mcp` (an absolute `XDG_RUNTIME_DIR` only), else
+  `~/.local/state/roves/mcp` is created with mode 0700 (or must be a real directory owned by
+  the user and is tightened to 0700), a unix-domain socket `<pid>.sock` (0600, tokio
+  `UnixListener`) is bound there and the record `<pid>.json` (0600; `pipe` holds the socket
+  path, plus the 256-bit `token` from `getrandom` and the game `origin`) is written through
+  a temporary file and a rename. Connections whose peer credentials (`SO_PEERCRED`) name
+  another uid are closed unread; every other connection must first send the token. Socket
+  and record are removed at the end of the loop (`gate: mcp session removed calls=<n>`). Log
+  lines: `gate: mcp enabled source=Switch|Package pipe=<socket> record=<path>` (never the
+  token) or `gate: mcp unavailable source=... error=...` (the game still runs, without the
+  marker).
+- **Requests** run in the player loop, at most 4 per turn: `state` (origin, URL, title,
+  `loaded`, `page_capability`, `startup` `loading|released` (first game frame shown),
+  `input_ready`, window size/pixels/scale, imported frames, input counters, last 50 console
+  lines); `evaluate` over the same in-process DevTools channel as the page markers (CDP
+  `Runtime.evaluate`, CSP kept, Promise refused; refused before the game URL was requested);
+  `click`/`press_key`/`type_text` as SDL events through the same `Input` as real input,
+  refused before the accepted game load-end (as real input).
+- **Page marker**: with the bridge running the page-marker script also defines the read-only
+  `window.__ROVES_MCP__ === true` in the top-level game document (`gate: page markers
+  registered ... mcp=true`); without it, `mcp=false` and the marker is absent.
+- **MCP-enabled package**: the standard package plus `mcp/` next to the executable
+  (`server.mjs`, `README.md`, `package.json`, `package-lock.json`, `node_modules/` from `npm
+  ci --omit=dev`, and `enabled`); the executable `roves-cef-linux-gate` and the packaged
+  template are byte-identical to the standard package's. CI uploads it as
+  `cef-linux-gate-x64-mcp` (release asset `roves_shell_linux_mcp.zip`).
+
+CI (`.github/workflows/cef-linux-gate.yml`, after the Steam variant): the stand-alone
+`mcp_rules` tests (including the unix directory 0700/owner and record 0600 test), then
+`smoke.mjs` (`support/cef-netrender-probe/mcp/smoke.mjs`) three times. **fixture**: the MCP
+fixture temporarily as the MCP package's game, launched with `--roves-mcp`: record and
+socket in the 0700 directory (both 0600), unauthenticated connections answered with nothing,
+discovery by PID, state, the `isMcpEnabled()` marker (entry script, top level only),
+evaluation, a trusted click, ArrowRight keydown/keyup, typed text, record and socket
+removed, token not logged. **disabled**: the standard package on the same fixture without
+the switch, and with `--roves-mcp` while the session directory cannot be created
+(`XDG_RUNTIME_DIR` points at a file): marker absent, host marker present, no record.
+**package**: the MCP package launched directly with the template, discovered without a PID.
+Exit 0, or 2 when the runner gives no frame (the bridge checks still run). Not verified yet:
+any run of these steps; a real MCP client session on a Mac/Linux desktop.
+
 ## Verdicts
 
 The binary prints `gate:` lines on stdout (the last is `gate: exit code=<N>`) and exits with:

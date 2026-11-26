@@ -1,15 +1,20 @@
-// Roves local MCP server (stdio) for a running Roves CEF game on Windows. See README.md
-// here and "Local MCP bridge" in support/cef-netrender-probe/README.md.
+// Roves local MCP server (stdio) for a running Roves CEF game on Windows, macOS or Linux.
+// See README.md here and "Local MCP bridge" in support/cef-netrender-probe/README.md.
 //
-// The game publishes %LOCALAPPDATA%\Roves\mcp\<pid>.json at launch when its bridge is on
-// (--roves-mcp, or mcp\enabled in the package). Every tool call rereads those records, so the
-// game may start after this server; the call goes to the game's local named pipe after the
-// session token. No TCP port is used.
+// The game publishes <session directory>/<pid>.json at launch when its bridge is on
+// (--roves-mcp, or the package marker mcp/enabled). The session directory is per user:
+//   Windows  %LOCALAPPDATA%\Roves\mcp
+//   macOS    $HOME/Library/Application Support/Roves/mcp
+//   Linux    $XDG_RUNTIME_DIR/roves/mcp, else $HOME/.local/state/roves/mcp
+// (the same rule as the game's mcp_rules.rs `record_dir`). Every tool call rereads those
+// records, so the game may start after this server; the call goes to the game's local
+// endpoint (a named pipe on Windows, a unix-domain socket in the session directory on
+// macOS/Linux) after the session token. No TCP port is used.
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 import { z } from "zod";
 
@@ -36,10 +41,38 @@ function alive(pid) {
   }
 }
 
-/** Running sessions of this Windows user, newest record format only. */
+/** The per-user session directory of this platform (mcp_rules.rs `record_dir`). */
+function sessionDirectory(platform = process.platform, env = process.env) {
+  const absolute = (name) => (env[name] && isAbsolute(env[name]) ? env[name] : undefined);
+  if (platform === "win32") {
+    if (!env.LOCALAPPDATA) throw new Error("Roves MCP needs a Windows user profile (LOCALAPPDATA)");
+    return join(env.LOCALAPPDATA, "Roves", "mcp");
+  }
+  if (platform === "darwin") {
+    if (!absolute("HOME")) throw new Error("Roves MCP needs HOME (an absolute path)");
+    return join(env.HOME, "Library", "Application Support", "Roves", "mcp");
+  }
+  if (platform === "linux") {
+    if (absolute("XDG_RUNTIME_DIR")) return join(env.XDG_RUNTIME_DIR, "roves", "mcp");
+    if (!absolute("HOME")) throw new Error("Roves MCP needs XDG_RUNTIME_DIR or HOME (an absolute path)");
+    return join(env.HOME, ".local", "state", "roves", "mcp");
+  }
+  throw new Error(`Roves MCP is not available on ${platform}`);
+}
+
+/** Whether `entry.pipe` is the endpoint a game with this PID publishes on this platform. */
+function validEndpoint(entry, directory) {
+  if (process.platform === "win32") {
+    const pipe = PIPE.exec(entry.pipe ?? "");
+    return Boolean(pipe) && Number(pipe[1]) === entry.pid;
+  }
+  // macOS/Linux: the socket <pid>.sock in the same private directory.
+  return entry.pipe === join(directory, `${entry.pid}.sock`);
+}
+
+/** Running sessions of this user, newest record format only. */
 function sessions() {
-  if (!process.env.LOCALAPPDATA) throw new Error("Roves MCP needs a Windows user profile (LOCALAPPDATA)");
-  const directory = join(process.env.LOCALAPPDATA, "Roves", "mcp");
+  const directory = sessionDirectory();
   let files;
   try {
     files = readdirSync(directory);
@@ -52,11 +85,13 @@ function sessions() {
     const match = /^([1-9]\d*)\.json$/.exec(file);
     if (!match) continue;
     try {
-      const entry = JSON.parse(readFileSync(join(directory, file), "utf8"));
-      const pipe = PIPE.exec(entry.pipe ?? "");
-      if (entry.version !== 1 || entry.pid !== Number(match[1]) || !pipe ||
-          Number(pipe[1]) !== entry.pid || !TOKEN.test(entry.token ?? "") ||
-          typeof entry.origin !== "string" || !alive(entry.pid)) continue;
+      const path = join(directory, file);
+      // macOS/Linux: the directory is private (0700); a record not owned by this user is
+      // not one of this user's games.
+      if (process.getuid && statSync(path).uid !== process.getuid()) continue;
+      const entry = JSON.parse(readFileSync(path, "utf8"));
+      if (entry.version !== 1 || entry.pid !== Number(match[1]) || !validEndpoint(entry, directory) ||
+          !TOKEN.test(entry.token ?? "") || typeof entry.origin !== "string" || !alive(entry.pid)) continue;
       found.push(entry);
     } catch {
       // A record can disappear or be half-replaced while the directory is read.

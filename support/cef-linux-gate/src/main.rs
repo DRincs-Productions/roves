@@ -61,8 +61,13 @@ mod key_rules;
 #[cfg(target_os = "linux")]
 #[path = "../../cef-macos-gate/src/keys.rs"]
 mod keys;
-/// The Windows MCP bridge's pure helpers: only the page marker script and its bootstrap URL
-/// are used here (no MCP bridge on Linux).
+/// The players' optional local MCP bridge (Windows player README "Local MCP bridge"; on
+/// Linux a unix-domain socket in the private session directory), driven by `session.rs`.
+#[cfg(target_os = "linux")]
+#[path = "../../cef-netrender-probe/src/mcp.rs"]
+mod mcp;
+/// The MCP bridge's pure helpers (limits, session directory, token check) and the page
+/// marker script with its bootstrap URL; the Windows pipe name is unused here.
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 #[path = "../../cef-netrender-probe/src/mcp_rules.rs"]
@@ -319,11 +324,15 @@ mod gate {
         let game_dir = dir.join(PLAYER_GAME_DIR);
         let game = game_dir.join("index.html").is_file().then_some(game_dir);
 
-        // Our only switch (README "Saves and the player profile"); Chromium ignores it.
+        // Our switches (README "Saves and the player profile", "Local MCP bridge"); Chromium
+        // ignores them.
         let mut isolated = false;
+        let mut mcp_switch = false;
         for arg in std::env::args().skip(1) {
             if arg == crate::profile::ISOLATED_PROFILE_SWITCH {
                 isolated = true;
+            } else if arg == "--roves-mcp" {
+                mcp_switch = true;
             } else if arg.starts_with("--roves-") {
                 return Err(format!("unknown switch {arg}"));
             }
@@ -335,6 +344,17 @@ mod gate {
                 crate::profile::ISOLATED_PROFILE_SWITCH
             ));
         }
+        if mcp_switch && game.is_none() {
+            return Err(format!(
+                "--roves-mcp needs the packaged game ({PLAYER_GAME_DIR}/index.html next to the \
+                 executable)"
+            ));
+        }
+        // Local MCP bridge (README "Local MCP bridge"): packaged game only, off unless the
+        // switch or the package marker `mcp/enabled` next to the executable asks for it.
+        let mcp = game
+            .as_ref()
+            .and_then(|_| crate::mcp::source(mcp_switch, Some(dir)));
         report_host(dir)?;
 
         // Packaged game, ordinary launch: the persistent profile is opened (lock, stored
@@ -555,6 +575,7 @@ mod gate {
                                 timeout,
                                 &game_exit,
                                 steam.as_deref(),
+                                mcp,
                             )
                         },
                         None => drive_fixture(&runtime, &window, &mut events, &gpu, timeout),

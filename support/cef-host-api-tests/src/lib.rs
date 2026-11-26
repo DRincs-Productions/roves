@@ -1,7 +1,8 @@
 //! See Cargo.toml: the players' loopback server and host API under plain `cargo test`, plus
 //! the macOS/Linux key-code rules (`cef-macos-gate/src/key_rules.rs`) and the Windows
 //! player's pure rules they build on (`cef-netrender-probe/src/game_rules.rs`) and the players'
-//! single-document navigation and external-link rules (`external_link.rs`).
+//! single-document navigation and external-link rules (`external_link.rs`), and the MCP
+//! bridge's pure rules (`mcp_rules.rs`).
 
 #[allow(dead_code)]
 #[path = "../../cef-window-probe/src/server.rs"]
@@ -22,6 +23,13 @@ mod external_link;
 #[allow(dead_code)]
 #[path = "../../cef-macos-gate/src/key_rules.rs"]
 mod key_rules;
+
+/// The MCP bridge's pure rules (`mcp_rules.rs`, shared by the three players): limits, token
+/// check, per-OS session directory, private record writes and, on unix, the 0700 session
+/// directory owner check. Its own tests run here on the host OS.
+#[allow(dead_code)]
+#[path = "../../cef-netrender-probe/src/mcp_rules.rs"]
+mod mcp_rules;
 
 #[cfg(test)]
 mod end_to_end {

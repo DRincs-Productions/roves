@@ -26,7 +26,6 @@ use crate::game_rules::{
     splash_indicator, splash_layout, suspension_change, wheel_marker,
 };
 use crate::mcp::Call;
-use crate::mcp_rules::{McpKey, point_in_window};
 use crate::splash::{
     BAR_INDICATOR, BAR_SIZE, BAR_TRACK, Branding, LOGO_PX, SPLASH_BACKGROUND, SPLASH_GAP,
     WORDMARK_SIZE, Wordmark,
@@ -599,26 +598,8 @@ struct Options {
     error_dialog: bool,
     /// Game mode only: the optional local MCP bridge (README "Local MCP bridge"). `None`
     /// (default) opens no pipe, publishes no session and leaves the DevTools channel off.
-    mcp: Option<McpSource>,
+    mcp: Option<crate::mcp::Source>,
 }
-
-/// What turned the local MCP bridge on.
-#[derive(Clone, Copy, Debug)]
-enum McpSource {
-    /// `--roves-mcp`.
-    Switch,
-    /// The package marker `mcp\enabled` next to the executable.
-    Package,
-}
-
-/// Package marker that turns the MCP bridge on for every game-mode launch of this executable
-/// (written only into MCP-enabled development packages).
-const MCP_PACKAGE_MARKER: [&str; 2] = ["mcp", "enabled"];
-
-/// Requests handled per loop turn at most (the rest wait for the next turn).
-const MCP_CALLS_PER_TURN: usize = 4;
-/// SDL device id of bridge-generated input events (they are never pushed into the SDL queue).
-const MCP_INPUT_DEVICE_ID: u32 = 0x524F_4D43;
 
 /// A fresh per-run directory `%TEMP%\<root>\run-<unix ms>-<pid>` (absolute).
 fn run_cache_dir(root: &str) -> PathBuf {
@@ -978,20 +959,10 @@ impl Options {
             },
             None => {},
         }
-        // Local MCP bridge: game mode only, off unless asked for.
+        // Local MCP bridge: game mode only, off unless asked for (package marker
+        // `mcp\enabled` next to the executable).
         if options.game.is_some() {
-            let marker = exe.as_deref().and_then(Path::parent).map(|dir| {
-                MCP_PACKAGE_MARKER
-                    .iter()
-                    .fold(dir.to_path_buf(), |path, part| path.join(part))
-            });
-            options.mcp = if mcp_switch {
-                Some(McpSource::Switch)
-            } else if marker.is_some_and(|marker| marker.is_file()) {
-                Some(McpSource::Package)
-            } else {
-                None
-            };
+            options.mcp = crate::mcp::source(mcp_switch, exe.as_deref().and_then(Path::parent));
         } else if mcp_switch {
             return Err("--roves-mcp needs a game (--roves-game-dir or the packaged game)".into());
         }
@@ -3167,7 +3138,7 @@ impl Probe {
         let Some(bridge) = self.mcp.as_mut() else {
             return;
         };
-        for (call, reply) in bridge.take(MCP_CALLS_PER_TURN) {
+        for (call, reply) in bridge.take(crate::mcp::CALLS_PER_TURN) {
             let method = call.method();
             let result = match call {
                 Call::State => Ok(self.mcp_state()),
@@ -3188,13 +3159,19 @@ impl Probe {
                     }
                     Err("the browser is not ready yet".to_owned())
                 },
-                Call::Click { x, y } => self.mcp_click(x, y),
-                Call::PressKey(key) => self.mcp_key(key),
-                Call::TypeText(text) => self.mcp_input(&[Event::TextInput {
-                    timestamp: 0,
-                    window_id: self.state.as_ref().map_or(0, |s| s.window.id()),
-                    text,
-                }]),
+                Call::Click { x, y } => match self.state.as_ref() {
+                    Some(s) => crate::mcp::click_events(&s.window, x, y)
+                        .and_then(|events| self.mcp_input(&events)),
+                    None => Err("the window is not ready yet".into()),
+                },
+                Call::PressKey(key) => {
+                    let window_id = self.state.as_ref().map_or(0, |s| s.window.id());
+                    self.mcp_input(&crate::mcp::key_events(window_id, key))
+                },
+                Call::TypeText(text) => {
+                    let window_id = self.state.as_ref().map_or(0, |s| s.window.id());
+                    self.mcp_input(&[crate::mcp::text_event(window_id, text)])
+                },
             };
             self.log.line(format_args!(
                 "mcp call method={method} ok={}",
@@ -3255,107 +3232,9 @@ impl Probe {
         })
     }
 
-    /// `click`: left button down + up at window point (`x`, `y`) (SDL logical coordinates,
-    /// CSS pixels at page zoom 1), through the same `Input` translation as a real click.
-    fn mcp_click(&mut self, x: f64, y: f64) -> Result<Value, String> {
-        let Some(s) = self.state.as_ref() else {
-            return Err("the window is not ready yet".into());
-        };
-        let (width, height) = s.window.size();
-        if !point_in_window(x, y, width, height) {
-            return Err(format!(
-                "click: ({x}, {y}) is outside the {width}x{height} window (window points)"
-            ));
-        }
-        let window_id = s.window.id();
-        let event = |down: bool| {
-            let (timestamp, which, mouse_btn, clicks) =
-                (0, MCP_INPUT_DEVICE_ID, SdlButton::Left, 1);
-            let (x, y) = (x as f32, y as f32);
-            if down {
-                Event::MouseButtonDown {
-                    timestamp,
-                    window_id,
-                    which,
-                    mouse_btn,
-                    clicks,
-                    x,
-                    y,
-                }
-            } else {
-                Event::MouseButtonUp {
-                    timestamp,
-                    window_id,
-                    which,
-                    mouse_btn,
-                    clicks,
-                    x,
-                    y,
-                }
-            }
-        };
-        self.mcp_input(&[event(true), event(false)])
-    }
-
-    /// `press_key`: one key down + up of a fixed non-character key, through the same `Input`
-    /// translation as a physical key (no `Char`/keypress: SDL sends text separately).
-    fn mcp_key(&mut self, key: McpKey) -> Result<Value, String> {
-        let (keycode, scancode) = match key {
-            McpKey::ArrowLeft => (Keycode::Left, Scancode::Left),
-            McpKey::ArrowRight => (Keycode::Right, Scancode::Right),
-            McpKey::ArrowUp => (Keycode::Up, Scancode::Up),
-            McpKey::ArrowDown => (Keycode::Down, Scancode::Down),
-            McpKey::Enter => (Keycode::Return, Scancode::Return),
-            McpKey::Escape => (Keycode::Escape, Scancode::Escape),
-            McpKey::Space => (Keycode::Space, Scancode::Space),
-            McpKey::Tab => (Keycode::Tab, Scancode::Tab),
-            McpKey::Backspace => (Keycode::Backspace, Scancode::Backspace),
-            McpKey::Delete => (Keycode::Delete, Scancode::Delete),
-            McpKey::Home => (Keycode::Home, Scancode::Home),
-            McpKey::End => (Keycode::End, Scancode::End),
-            McpKey::PageUp => (Keycode::PageUp, Scancode::PageUp),
-            McpKey::PageDown => (Keycode::PageDown, Scancode::PageDown),
-        };
-        let window_id = self.state.as_ref().map_or(0, |s| s.window.id());
-        let event = |down: bool| {
-            let (timestamp, keycode, scancode, keymod, repeat, which, raw) = (
-                0,
-                Some(keycode),
-                Some(scancode),
-                Mod::empty(),
-                false,
-                MCP_INPUT_DEVICE_ID,
-                0,
-            );
-            if down {
-                Event::KeyDown {
-                    timestamp,
-                    window_id,
-                    keycode,
-                    scancode,
-                    keymod,
-                    repeat,
-                    which,
-                    raw,
-                }
-            } else {
-                Event::KeyUp {
-                    timestamp,
-                    window_id,
-                    keycode,
-                    scancode,
-                    keymod,
-                    repeat,
-                    which,
-                    raw,
-                }
-            }
-        };
-        self.mcp_input(&[event(true), event(false)])
-    }
-
-    /// Feeds bridge-generated SDL events to the game's `Input`, exactly as the loop feeds real
-    /// ones; refused until page input is forwarded for real input too (`input_ready`).
+    /// Feeds bridge-generated SDL events to the game's `Input` (`mcp::forward`), exactly as
+    /// the loop feeds real ones; refused until page input is forwarded for real input too
+    /// (`input_ready`).
     fn mcp_input(&mut self, events: &[Event]) -> Result<Value, String> {
         if !self.input_ready() {
             return Err(if self.options.player {
@@ -3371,18 +3250,10 @@ impl Probe {
         let Some(input) = s.input.as_mut() else {
             return Err("no game input".into());
         };
-        let mut forwarded = 0;
-        for event in events {
-            let (before, rejected) = (input.forwarded, input.rejected);
-            if let Some(line) = input.window_event(&mut s.producer, &s.window, event, true) {
-                self.log.line(format_args!("{line}"));
-            }
-            if input.rejected > rejected {
-                return Err("the browser refused the input event".into());
-            }
-            forwarded += input.forwarded - before;
-        }
-        Ok(json!({ "forwarded": forwarded }))
+        let log = &mut self.log;
+        crate::mcp::forward(input, &mut s.producer, &s.window, events, |line| {
+            log.line(format_args!("{line}"))
+        })
     }
 
     fn window_event(&mut self, event: Event) {

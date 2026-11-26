@@ -1707,6 +1707,7 @@ dependencies = [
  "cef",
  "dpi",
  "form_urlencoded",
+ "getrandom",
  "log",
  "open",
  "pollster",

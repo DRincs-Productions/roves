@@ -1,7 +1,8 @@
 # Unit tests of the CEF players' shared loopback server and host API
 # (support/cef-window-probe/src/{server,host_api}.rs), the Windows player's pure rules
-# (support/cef-netrender-probe/src/game_rules.rs) and the macOS/Linux key-code rules
-# (support/cef-macos-gate/src/key_rules.rs), compiled here through `#[path]` without
+# (support/cef-netrender-probe/src/game_rules.rs), the macOS/Linux key-code rules
+# (support/cef-macos-gate/src/key_rules.rs) and the MCP bridge's pure rules
+# (support/cef-netrender-probe/src/mcp_rules.rs), compiled here through `#[path]` without
 # CEF, so they run with a plain `cargo test` on any platform (the players themselves link
 # CEF, which `--features dox` cannot). Separate Cargo workspace, never shipped. Versions are
 # the players'; Cargo.lock was seeded from support/cef-netrender-probe/Cargo.lock.

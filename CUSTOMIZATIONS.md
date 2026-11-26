@@ -1,3 +1,31 @@
+## 2026-11-26 - CEF players: local MCP bridge on macOS and Linux
+
+Changed: `support/cef-netrender-probe/src/{mcp.rs,mcp_rules.rs,app.rs}`, `Cargo.toml`/
+`Cargo.lock` of the three players (`getrandom` 0.2 now direct in all three, replacing the
+Windows `BCryptGenRandom` call and windows-sys' `Win32_Security_Cryptography` feature; `libc`
+0.2 direct and tokio `io-util`/`time` in the gates; no new locked package),
+`support/cef-macos-gate/src/{session.rs,player.rs,main.rs}`,
+`support/cef-linux-gate/src/{player.rs,main.rs}`, `support/cef-host-api-tests` (now also runs
+the `mcp_rules` tests), `support/cef-netrender-probe/mcp/{server.mjs,smoke.mjs,README.md}`,
+`.github/workflows/{cef-macos-gate,cef-linux-gate,release}.yml`, the probe and gate READMEs,
+`AGENTS.md` (release asset sentence), `TODO.md`.
+Why: the development-only MCP bridge existed only in the Windows player. `mcp.rs` is now
+platform-neutral (generic over welding's `CefSurfaceProducer`) and compiled into the macOS
+and Linux players through `#[path]`: on Windows the named pipe is unchanged; on macOS/Linux a
+tokio `UnixListener` socket `<pid>.sock` in a per-user session directory
+(`~/Library/Application Support/Roves/mcp`; `$XDG_RUNTIME_DIR/roves/mcp`, else
+`~/.local/state/roves/mcp`) created or tightened to 0700 and required to be owned by the
+user, socket and record 0600, peer uid checked on every connection, both removed on exit.
+Same switch `--roves-mcp`, same package marker (`Contents/Resources/mcp/enabled` on macOS,
+`mcp/enabled` next to the executable on Linux), record format (`pipe` holds the socket path),
+requests and `window.__ROVES_MCP__` marker; the SDL event builders and the `Input` hand-off
+are shared by the three players. `server.mjs` discovers records in the per-OS directory and
+skips records owned by another uid; `smoke.mjs` drives the gate executables (env settings,
+stdout log). The gate workflows build MCP-enabled packages (artifacts
+`cef-macos-gate-arm64-mcp`, `cef-linux-gate-x64-mcp`) and run the fixture, disabled and
+packaged MCP smokes; `release.yml` publishes `roves_shell_{macos,linux}_mcp.zip`, checks
+their `mcp/` layout (absent from the other zips) and now expects ten assets.
+
 ## 2026-11-26 - CEF players: single-document navigation veto and external links
 
 Added: `support/cef-netrender-probe/src/external_link.rs` (compiled into the macOS and Linux

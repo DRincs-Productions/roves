@@ -64,7 +64,14 @@ log = "0.4"
 # normalisation, MIME types and Range requests on 127.0.0.1; tokio runs it on its own thread.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 tower-http = { version = "0.7.1", default-features = false, features = ["fs"] }
-tokio = { version = "1.47", default-features = false, features = ["rt", "net", "sync"] }
+tokio = { version = "1.47", default-features = false, features = ["rt", "net", "sync", "io-util", "time"] }
+# Optional local MCP bridge (support/cef-netrender-probe/src/mcp.rs, `#[path]`, off by default):
+# tokio's `io-util`/`time` (line reads, timeouts; the Windows player's features, already in
+# the graph), the session token from the OS RNG (getrandom 0.2.17, MIT/Apache-2.0) and the
+# effective uid for the socket peer check and the session directory owner (libc 0.2.191,
+# MIT/Apache-2.0); both were already in Cargo.lock.
+getrandom = "0.2"
+libc = "0.2"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 # Host API (support/cef-window-probe/src/host_api.rs, `#[path]` as in the Windows player):
 # JSON replies, base64 save payloads, query strings (already in Cargo.lock) and atomic save

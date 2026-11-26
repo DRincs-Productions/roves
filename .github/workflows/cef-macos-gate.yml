@@ -17,9 +17,12 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 macOS feasibility gate
 # released by the first game frame (README "Startup screen"). A second .app built with the
 # `steam` feature (README "Steam") ships libsteam_api.dylib in Contents/MacOS only for the
 # main executable and, with no Steam client on the runner, must log `steam unavailable` and
-# play like the standard one. Separate from cef-netrender-probe.yml (Windows, unchanged).
-# Also called by release.yml (workflow_call) on a v*.*.* tag: the same build and checks, and
-# its two zipped .app artifacts become the macOS release assets.
+# play like the standard one. A third .app, the MCP-enabled development package (the standard
+# .app plus Contents/Resources/mcp and its `enabled` marker, Windows player README "Local MCP
+# bridge"), is smoked through its unix-socket bridge (fixture interaction, packaged launch,
+# bridge off/unavailable in the standard .app). Separate from cef-netrender-probe.yml
+# (Windows, unchanged). Also called by release.yml (workflow_call) on a v*.*.* tag: the same
+# build and checks, and its three zipped .app artifacts become the macOS release assets.
 
 on:
   push:
@@ -42,6 +45,9 @@ on:
       - 'support/cef-netrender-probe/src/input.rs'
       - 'support/cef-netrender-probe/src/page_init.rs'
       - 'support/cef-netrender-probe/src/mcp_rules.rs'
+      # The optional local MCP bridge (`#[path]`) and its Node server, smoke test and fixture.
+      - 'support/cef-netrender-probe/src/mcp.rs'
+      - 'support/cef-netrender-probe/mcp/**'
       - 'support/cef-netrender-probe/src/icon_rules.rs'
       - 'support/cef-netrender-probe/src/window_icon.rs'
       - 'icon.png'
@@ -80,6 +86,7 @@ jobs:
             support/vendor/wgpu-weld
             support/cef-window-probe/src
             support/cef-netrender-probe/src
+            support/cef-netrender-probe/mcp
             resources/fonts
           sparse-checkout-cone-mode: true
       - uses: dtolnay/rust-toolchain@master
@@ -644,6 +651,129 @@ jobs:
           sleep 2
           if pgrep -fl "roves-cef-macos-gate"; then echo "::error::Steam variant processes still running after exit"; failed=1; fi
           test "$failed" = 0
+      # ── Local MCP bridge (support/cef-netrender-probe/mcp/README.md) ────────────────
+      # The MCP-enabled development .app: a copy of the standard .app (same executable, same
+      # packaged template) plus Contents/Resources/mcp (server.mjs, README, package files and
+      # its `npm ci --omit=dev` node_modules) and the marker Contents/Resources/mcp/enabled,
+      # which turns the bridge on for every launch. The standard .app keeps the bridge off.
+      - name: assemble the MCP-enabled .app
+        id: mcp_package
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          # The bridge's pure rules stand-alone (std only), including the unix session
+          # directory (0700, owner) and record (0600) tests.
+          rules="$RUNNER_TEMP/mcp-rules-tests"
+          mkdir -p "$rules"
+          rustc --edition 2024 --test support/cef-netrender-probe/src/mcp_rules.rs -o "$rules/mcp_rules"
+          "$rules/mcp_rules"
+          app="$RUNNER_TEMP/gate-app-mcp/roves-cef-macos-gate.app"
+          test ! -e "$app" || { echo "::error::$app already exists"; exit 1; }
+          mkdir -p "$(dirname "$app")"
+          ditto "$APP" "$app"
+          mcp="$app/Contents/Resources/mcp"
+          mkdir -p "$mcp"
+          for file in server.mjs package.json package-lock.json README.md; do
+            cp "support/cef-netrender-probe/mcp/$file" "$mcp/"
+          done
+          (cd "$mcp" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund)
+          touch "$mcp/enabled"
+          # Discovery smoke of the packaged server without a game (tool list, clean error).
+          node support/cef-netrender-probe/mcp/smoke.mjs list-only "$mcp/server.mjs"
+          for required in Contents/Resources/game/index.html Contents/Resources/mcp/server.mjs \
+              Contents/Resources/mcp/enabled Contents/Resources/mcp/README.md \
+              Contents/Resources/mcp/node_modules/@modelcontextprotocol/server/package.json; do
+            test -e "$app/$required" || { echo "::error::MCP .app lacks $required"; exit 1; }
+          done
+          cmp -s "$APP/Contents/MacOS/roves-cef-macos-gate" "$app/Contents/MacOS/roves-cef-macos-gate" \
+            || { echo "::error::the MCP .app executable differs from the standard .app"; exit 1; }
+          test ! -e "$APP/Contents/Resources/mcp" || { echo "::error::the standard .app contains Contents/Resources/mcp"; exit 1; }
+          echo "::notice::MCP .app: $(cd "$mcp" && npm ls --omit=dev --depth=0 2>/dev/null | tail -n +2 | tr -d '\n')"
+          echo "MCP_APP=$app" >> "$GITHUB_ENV"
+      # Real interaction through the unix-socket bridge: the MCP fixture
+      # (support/cef-netrender-probe/mcp/fixture) temporarily as the MCP .app's game, launched
+      # with --roves-mcp. Required (smoke.mjs fixture): session record and socket in the 0700
+      # per-user directory (~/Library/Application Support/Roves/mcp, both 0600), two
+      # unauthenticated connections answered with nothing, discovery by PID, state, the
+      # isMcpEnabled() marker (entry script, top level only), evaluation (values, exception,
+      # Promise refused, CSP kept for eval), a trusted DOM click, ArrowRight keydown/keyup,
+      # typed text, out-of-window click and unlisted key refused, clean exit (0, or 2 when the
+      # runner gives no accelerated frame), record and socket removed, token not logged.
+      - name: MCP smoke on the fixture (unix socket)
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/mcp-fixture-run"
+          game="$MCP_APP/Contents/Resources/game"
+          test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
+          mkdir -p "$out"
+          mv "$game" "$out/template-game"
+          restore() { rm -rf "$game"; mv "$out/template-game" "$game"; }
+          trap restore EXIT
+          ditto support/cef-netrender-probe/mcp/fixture "$game"
+          set +e
+          perl -e 'alarm shift; exec @ARGV' 420 node support/cef-netrender-probe/mcp/smoke.mjs fixture \
+            "$MCP_APP/Contents/Resources/mcp/server.mjs" "$MCP_APP/Contents/MacOS/roves-cef-macos-gate" \
+            support/cef-netrender-probe/mcp/fixture "$out"
+          code=$?
+          set -e
+          grep -E '^gate: (mcp (enabled|unavailable|session)|page markers|load-end|NO_|PASS|FAIL|exit code=)' "$out/game.log" \
+            | while read -r line; do echo "::notice::$line"; done || true
+          sleep 2
+          if pgrep -fl "roves-cef-macos-gate"; then echo "::error::player processes still running after exit"; code=1; fi
+          test "$code" = 0 || { echo "::error::MCP fixture smoke failed (exit $code)"; exit 1; }
+          echo "::notice::MCP fixture smoke (macOS): discovery, authentication, state, isMcpEnabled() marker, evaluation, click, key and text delivered through the unix socket"
+      # isMcpEnabled() negative cases on the same fixture with the STANDARD .app (no
+      # Contents/Resources/mcp/enabled): bridge off (no --roves-mcp), and --roves-mcp while the
+      # session directory cannot be created (a file at its path, removed afterwards). Required
+      # (smoke.mjs disabled): game loaded, MCP marker absent in the entry script and the child
+      # frame, host marker present, no session record, no FAIL line, clean exit.
+      - name: MCP disabled smoke on the fixture (standard .app)
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/mcp-disabled-run"
+          game="$APP/Contents/Resources/game"
+          test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
+          mkdir -p "$out"
+          mv "$game" "$out/template-game"
+          restore() { rm -rf "$game"; mv "$out/template-game" "$game"; }
+          trap restore EXIT
+          ditto support/cef-netrender-probe/mcp/fixture "$game"
+          set +e
+          perl -e 'alarm shift; exec @ARGV' 420 node support/cef-netrender-probe/mcp/smoke.mjs disabled \
+            "$MCP_APP/Contents/Resources/mcp/server.mjs" "$APP/Contents/MacOS/roves-cef-macos-gate" \
+            support/cef-netrender-probe/mcp/fixture "$out"
+          code=$?
+          set -e
+          for case in off unavailable; do
+            test -f "$out/$case/game.log" || continue
+            grep -E '^gate: (mcp |page markers|load-end|exit code=)|roves-mcp-(entry|frame)' "$out/$case/game.log" \
+              | while read -r line; do echo "::notice::$case $line"; done || true
+          done
+          sleep 2
+          if pgrep -fl "roves-cef-macos-gate"; then echo "::error::player processes still running after exit"; code=1; fi
+          test "$code" = 0 || { echo "::error::MCP disabled smoke failed (exit $code)"; exit 1; }
+      # Packaged launch: the MCP .app started directly (the marker turns the bridge on) with
+      # the packaged template, discovered without a PID. Required: state and evaluation on the
+      # game's origin; click forwarded once the game accepts input, otherwise refused as not
+      # ready; record and socket removed after exit.
+      - name: MCP smoke on the packaged launch
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/mcp-package-run"
+          test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
+          set +e
+          perl -e 'alarm shift; exec @ARGV' 300 node support/cef-netrender-probe/mcp/smoke.mjs package \
+            "$MCP_APP/Contents/Resources/mcp/server.mjs" "$MCP_APP" "$out"
+          code=$?
+          set -e
+          grep -E '^gate: (mcp (enabled|unavailable|session)|load-end|startup screen released|NO_|PASS|FAIL|exit code=)' "$out/game.log" \
+            | while read -r line; do echo "::notice::$line"; done || true
+          sleep 2
+          if pgrep -fl "roves-cef-macos-gate"; then echo "::error::player processes still running after exit"; code=1; fi
+          test "$code" = 0 || { echo "::error::MCP package smoke failed (exit $code)"; exit 1; }
       - name: zip the .app
         if: always() && env.APP != ''
         shell: bash
@@ -652,6 +782,10 @@ jobs:
         if: always() && env.STEAM_APP != ''
         shell: bash
         run: ditto -c -k --keepParent "$STEAM_APP" "$RUNNER_TEMP/roves-cef-macos-arm64-steam.zip"
+      - name: zip the MCP .app
+        if: always() && env.MCP_APP != ''
+        shell: bash
+        run: ditto -c -k --keepParent "$MCP_APP" "$RUNNER_TEMP/roves-cef-macos-arm64-mcp.zip"
       - name: upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -665,6 +799,9 @@ jobs:
             ${{ runner.temp }}/player-steam-run.log
             ${{ runner.temp }}/player-profile/*.log
             ${{ runner.temp }}/player-fixture/*.log
+            ${{ runner.temp }}/mcp-fixture-run/game.log
+            ${{ runner.temp }}/mcp-package-run/game.log
+            ${{ runner.temp }}/mcp-disabled-run/*/game.log
             ${{ runner.temp }}/player-last-frame.bmp
             ${{ runner.temp }}/player-game-sha256.txt
             ${{ runner.temp }}/vnt-build-info.txt
@@ -687,4 +824,12 @@ jobs:
         with:
           name: cef-macos-gate-arm64-steam
           path: ${{ runner.temp }}/roves-cef-macos-arm64-steam.zip
+          if-no-files-found: warn
+      # The MCP-enabled development .app (Contents/Resources/mcp, same executable and game).
+      - name: upload the MCP .app
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-macos-gate-arm64-mcp
+          path: ${{ runner.temp }}/roves-cef-macos-arm64-mcp.zip
           if-no-files-found: warn

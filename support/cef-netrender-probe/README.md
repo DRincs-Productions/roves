@@ -1190,6 +1190,14 @@ package, below). Off means: no pipe, no session record, welding's DevTools chann
 subscribed, and no `mcp` log line (gated in CI on the plain package). The same `play.dll`
 serves both packages; `--roves-mcp` without a game is a usage error.
 
+The macOS and Linux players (`support/cef-macos-gate`, `support/cef-linux-gate`, section
+"Local MCP bridge" of their READMEs) compile the same `src/mcp.rs` and `src/mcp_rules.rs`
+through `#[path]` since 2026-11-26: same switch, same package marker (macOS
+`Contents/Resources/mcp/enabled`, Linux `mcp/enabled` next to the executable), same record
+format, requests and page marker, with a unix-domain socket instead of the named pipe (below).
+The SDL event builders and the `Input` hand-off of `click`/`press_key`/`type_text`
+(`mcp::click_events`, `key_events`, `text_event`, `forward`) are shared by the three players.
+
 Pieces (`src/mcp.rs`, pure rules in `src/mcp_rules.rs`, stdio server in `mcp/`):
 
 - **Transport and discovery.** At launch, before the window and the browser exist, the probe
@@ -1197,11 +1205,24 @@ Pieces (`src/mcp.rs`, pure rules in `src/mcp_rules.rs`, stdio server in `mcp/`):
   `named_pipe::ServerOptions` (`first_pipe_instance`, so an existing pipe of that name cannot
   be squatted; `reject_remote_clients`) on its own thread, then writes the session record
   `%LOCALAPPDATA%\Roves\mcp\<pid>.json` (`version`, `pid`, `pipe`, 256-bit `token` from
-  `BCryptGenRandom`, game `origin`) through a temporary file and a rename. The record is
-  removed when the run starts closing (and at the end of every exit path). Log lines: `mcp
-  enabled source=Switch|Package pipe=<name> record=<path>` (the token is never logged), `mcp
-  call method=<m> ok=<bool>` (or `queued=true` for `evaluate`), `mcp session removed
-  calls=<n>`, or `mcp unavailable source=... error=...` (the game still runs).
+  the OS RNG through `getrandom`, game `origin`) through a temporary file and a rename. The
+  record is removed when the run starts closing (and at the end of every exit path). Log
+  lines: `mcp enabled source=Switch|Package pipe=<name> record=<path>` (the token is never
+  logged), `mcp call method=<m> ok=<bool>` (or `queued=true` for `evaluate`), `mcp session
+  removed calls=<n>`, or `mcp unavailable source=... error=...` (the game still runs).
+- **macOS and Linux transport.** The session directory is `~/Library/Application
+  Support/Roves/mcp` (macOS) or `$XDG_RUNTIME_DIR/roves/mcp`, else
+  `~/.local/state/roves/mcp` (Linux; a relative value counts as unset, as in the XDG Base
+  Directory specification): `mcp_rules::record_dir`, also implemented by `server.mjs`. It is
+  created with every missing part 0700, or, when it exists, must be a real directory (not a
+  symlink) owned by the effective uid and is tightened to 0700 (`mcp_rules::private_dir`).
+  The endpoint is the socket `<dir>/<pid>.sock` (tokio `UnixListener`, a stale socket of the
+  same PID replaced, chmod 0600 after bind); the record field `pipe` holds its path. Every
+  accepted connection's peer credentials (`UnixStream::peer_cred`: `SO_PEERCRED` on Linux,
+  `getpeereid` on macOS) must name the player's effective uid, otherwise it is closed unread.
+  The record is written 0600 (`mcp_rules::write_private`, fresh temporary file + rename, as
+  on Windows). Socket and record are removed when the run starts closing. The gates log the
+  same lines with the `gate: ` prefix.
 - **Authentication.** The first line of every connection must equal the token (compared
   without an early exit) within 5 s; otherwise the pipe closes without answering anything.
   Then one JSON request per line (at most 20 KiB), one JSON reply per line (`{"value": ...}`
@@ -1306,10 +1327,13 @@ Pieces (`src/mcp.rs`, pure rules in `src/mcp_rules.rs`, stdio server in `mcp/`):
   a `<script>` rewritten into the served HTML (changes the game's bytes and CSP), a URL
   parameter or cookie (page-controlled, not top-level-only).
 
-**Security model.** Same Windows user only: the record lives in the user's profile (default
+**Security model.** Same user only. Windows: the record lives in the user's profile (default
 ACL: the user, SYSTEM, Administrators), the pipe accepts no remote client, and nothing works
-without the token. Any process of the same user can read the record and drive the game; such
-a process could already open or debug the game process itself, so this adds no privilege.
+without the token. macOS/Linux: the socket and the record live in a 0700 directory owned by
+the user (0600 each), connections from another uid are closed by the peer-credential check,
+and nothing works without the token. Any process of the same user can read the record and
+drive the game; such a process could already open or debug the game process itself, so this
+adds no privilege.
 No TCP listener and no `--remote-debugging-port`/`--remote-debugging-pipe` switch is used; the
 loopback HTTP server is unchanged. The page receives only the read-only boolean
 `__ROVES_MCP__` (top-level document on the game origin, bridge running; see above): no
@@ -1341,17 +1365,32 @@ in V8's inspector sources as vendored by the `v8` crate 152.2.0 (`src/inspector/
 
 **Libraries evaluated.** Reused: welding's DevTools channel (`devtools_protocol`,
 `send_devtools_message`, `poll_devtools_message`) instead of an own observer; the probe's
-`Input` for interaction; tokio (`named_pipe`, `io-util`, `time`, `sync`, all already
-compiled in the graph) for the pipe; serde_json (already in the graph through cef and
-welding) for JSON; windows-sys `BCryptGenRandom` (feature `Win32_Security_Cryptography`) for
-the token (`getrandom` is not in the Windows graph); the official MCP TypeScript SDK for the
-protocol. Not used: `rmcp` (Rust MCP SDK; a self-contained `.exe` would avoid Node, but it
+`Input` for interaction; tokio (`named_pipe` on Windows, `UnixListener` + `peer_cred` on
+macOS/Linux, `io-util`, `time`, `sync`, all already compiled in the graph) for the
+transport; serde_json (already in the graph through cef and welding) for JSON; `getrandom`
+0.2.17 (already in the three lockfiles; since 2026-11-26 a direct dependency of the three
+players, replacing the Windows-only `BCryptGenRandom` call and its windows-sys feature) for
+the token and the pipe nonce; `libc` 0.2.191 (already locked) for `geteuid` in the macOS/Linux
+peer and directory-owner checks; the official MCP TypeScript SDK for the protocol. Not used: `rmcp` (Rust MCP SDK; a self-contained `.exe` would avoid Node, but it
 adds a crate graph to review and a second binary, while the TypeScript server already ran in
 this repository), CEF's `--remote-debugging-port` (unauthenticated TCP),
 `--remote-debugging-pipe` (needs the client as parent process), welding's
 `request_script_result` (renderer-side evaluation, no CSP option, no time limit), CDP
 `Input.dispatch*` (would bypass the probe's input translation that the real game uses). No
 CEF fork, no new Cargo crate (one lock line: `serde_json` as a direct dependency).
+
+**Verification of the macOS/Linux bridge (2026-11-26).** Local only: `mcp_rules` stand-alone
+tests (10 on Windows; the unix directory/permission test compiles only on unix and runs in
+the gate workflows' assembly steps), `cef-host-api-tests` (now including `mcp_rules`, 71
+tests) and its `cargo check --tests --target x86_64-unknown-linux-gnu`, clippy `-D warnings`
+`dox`/`dox,steam` for this player and cross for both gates, `cargo fmt --check`, `node
+--check` and `smoke.mjs list-only` on Windows, YAML and `bash -n` of the workflows. CI gates
+added, **not run yet**: on macOS and Linux an MCP-enabled package (artifacts
+`cef-macos-gate-arm64-mcp`, `cef-linux-gate-x64-mcp`), the fixture smoke on it with the MCP
+fixture as the packaged game (directory 0700, socket and record 0600, interaction), the
+disabled smoke on the standard package (bridge off; bridge unavailable: Linux
+`XDG_RUNTIME_DIR` points at a file, macOS a file at the session directory's path) and the
+packaged launch smoke; release assets `roves_shell_{macos,linux}_mcp.zip`.
 
 **Verification of `isMcpEnabled()` (2026-11-25).** Local only: `mcp_rules` tests (8,
 including the page script bounds), `cargo check`/`clippy -D warnings --features dox
@@ -1708,12 +1747,15 @@ branches, so the tag does not run them a second time); this one gets `release: t
 always produces and smokes the MCP-enabled package and titles `PROVENANCE.txt` as a release.
 A publish job (only when all three succeed) turns their artifacts into the release assets
 `roves_shell_windows.zip`, `roves_shell_windows_steam.zip`, `roves_shell_windows_mcp.zip`
-(package contents at the zip root), `roves_shell_macos.zip`, `roves_shell_macos_steam.zip`
-(the gate's `ditto` zip of the `.app`), `roves_shell_linux.zip`, `roves_shell_linux_steam.zip`
-(Info-ZIP with unix modes and symlinks; `chrome-sandbox` ships 0755, see the Linux gate README
-"Running elsewhere") and `SHA256SUMS.txt`. Before publishing it checks each zip's layout and
-the Windows packages against their own `SHA256SUMS.txt`; afterwards it requires all eight
-assets on the release. Each zip carries the visual-novel-template sample game and is the base
+(package contents at the zip root), `roves_shell_macos.zip`, `roves_shell_macos_steam.zip`,
+`roves_shell_macos_mcp.zip` (the gate's `ditto` zip of the `.app`), `roves_shell_linux.zip`,
+`roves_shell_linux_steam.zip`, `roves_shell_linux_mcp.zip` (Info-ZIP with unix modes and
+symlinks; `chrome-sandbox` ships 0755, see the Linux gate README "Running elsewhere") and
+`SHA256SUMS.txt`. The three `_mcp` packages are the development-only MCP-enabled packages
+("Local MCP bridge"): `mcp/enabled`, `mcp/server.mjs` and its installed SDK must be present
+in them (macOS: under `Contents/Resources`) and `mcp` absent from every other zip. Before
+publishing it checks each zip's layout and the Windows packages against their own
+`SHA256SUMS.txt`; afterwards it requires all ten assets on the release. Each zip carries the visual-novel-template sample game and is the base
 Roves Packmaster and roves-action repack with a developer's game. Re-cut a failed release by
 deleting and pushing the tag again (the job replaces a release of the same name).
 
