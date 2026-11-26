@@ -580,9 +580,11 @@ the three player workflows (`cef-netrender-probe.yml` Windows with `release: tru
 `cef-macos-gate.yml`, `cef-linux-gate.yml`), which build and verify the standard, Steam and
 MCP packages end to end; its `publish` job zips them, checks every zip and creates the
 GitHub Release with ten assets: `roves_shell_{windows,macos,linux}.zip`, the same three with
-`_steam` and with `_mcp` (development only), and `SHA256SUMS.txt`. Each zip is a
-runnable player with the sample game in `game/`; Packmaster and roves-action use it as the
-base and replace `game/` with the user's build. A push to a `release-check/<name>` branch
+`_steam` and with `_mcp` (development only), and `SHA256SUMS.txt`. The player workflows test
+the packages with the visual-novel-template sample game; the published zips are the shell
+only (user decision 2026-11-26: `publish` strips `game/`, the sample icon and provenance via
+`.github/release/shell_only_windows.py` and `zip -d`). `@drincs/roves-cli` (`roves-cli/`),
+used by roves-action and by Packmaster as a sidecar, adds the developer's build as `game/`. A push to a `release-check/<name>` branch
 runs the same pipeline as a dry run (zips uploaded as the `roves-release-dry-run` artifact,
 nothing published).
 
@@ -593,7 +595,7 @@ nothing published).
 3. `git tag vX.Y.Z && git push origin vX.Y.Z`; watch
    `https://github.com/DRincs-Productions/roves/actions/workflows/release.yml`.
 4. Once green, confirm at `https://github.com/DRincs-Productions/roves/releases/tag/vX.Y.Z`
-   that all eight assets are attached (the workflow's last step also checks it). Download
+   that all ten assets are attached (the workflow's last step also checks it). Download
    them and try them; "the workflow went green" alone is not done.
 5. In the same effort, bump the pins in `roves-action` and `roves-packmaster` (below).
 
@@ -603,9 +605,11 @@ The consumer checkouts can be sibling directories or submodules inside this repo
 (`roves-action/`, `roves-packmaster/`, `roves-wiki/`). Locate the actual checkout before
 reporting it missing. Their engine references do not update just because a tag is pushed:
 
-- **`roves-action`**: the desktop release URL version in `action.yml` and the README.
+- **`roves-action`**: the `--shell-version` literal in `action.yml` (DESKTOP PLAYER PIN) and
+  the README. Its CLI pin (`ROVES_CLI_VERSION`) moves with roves-cli releases.
 - **`roves-packmaster/src/lib/shell-version.txt`**: the single shared pin (frontend through
   Vite's raw loader, Rust through `include_str!`). Update the README and check both paths.
+  Its roves-cli sidecar pin is `src/lib/roves-cli-version.txt`.
 
 A change of the package layout (file names, `game/` location, icon files) is a code change
 in both consumers, not a pin bump. `roves-api`'s `COMPATIBLE_SHELL_VERSION` is bumped only
