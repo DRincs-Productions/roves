@@ -391,7 +391,10 @@ async function fixture([exe, fixtureDir, out]) {
     assert.ok((await client.value("type_text", { text: "roves" })).forwarded >= 1);
     const typed = await until("typed text", 10_000, async () => {
       const value = (await evaluate("({ typed: rovesMcpFixture.typed, input: document.getElementById('text-target').value })")).value;
-      return { done: value.typed === "roves", value };
+      // Linux commits text through CEF's IME path: the field gets the text and `input` fires,
+      // but there is no `keypress` (CUSTOMIZATIONS.md, 2026-11-26).
+      const keypress = process.platform === "linux" || value.typed === "roves";
+      return { done: value.input === "roves" && keypress, value };
     });
     log(`text delivered ${JSON.stringify(typed)}`);
     const control = await client.tool("type_text", { text: "a\nb" });
