@@ -435,12 +435,22 @@ impl Session {
             let ready = self.loaded_at.is_some();
             let result = match call {
                 Call::State => Ok(self.mcp_state(window, frames)),
-                Call::Evaluate(_) if !self.navigated => {
+                Call::Evaluate(_) | Call::Screenshot(_) if !self.navigated => {
                     Err("the game page is not loaded yet".to_owned())
                 },
                 Call::Evaluate(expression) => {
                     if let Some(bridge) = self.mcp.as_mut() {
                         bridge.evaluate(producer, &expression, reply);
+                        println!("gate: mcp call method={method} queued=true");
+                    }
+                    continue;
+                },
+                Call::Screenshot(shot) => {
+                    if let Some(bridge) = self.mcp.as_mut() {
+                        let (width, height) = window.size();
+                        let view = (f64::from(width), f64::from(height));
+                        let dpr = f64::from(window.display_scale());
+                        bridge.screenshot(producer, &shot, view, dpr, reply);
                         println!("gate: mcp call method={method} queued=true");
                     }
                     continue;

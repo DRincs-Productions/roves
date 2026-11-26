@@ -1,4 +1,5 @@
 {
     "roves": "core",
-    "roves-diagnostics": "diagnostics"
+    "roves-diagnostics": "diagnostics",
+    "roves-playtest": "playtest"
 }

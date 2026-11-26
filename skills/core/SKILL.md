@@ -20,8 +20,10 @@ developer compiling anything:
       `libsteam_api.dylib`, `libsteam_api.so`) next to the executable, so the game can reach
       Steam through the Roves host API (Steam missing or not running is never fatal);
     - **MCP** (development only): a local MCP (Model Context Protocol) bridge that lets an AI
-      agent or IDE read the running game's state and console, run JavaScript in the page, click,
-      press keys and type. Never ship it to players.
+      agent or IDE read the running game's state and console, take screenshots and frame
+      sequences, read the page and the PixiJS scene, inspect HTML/CSS, run JavaScript in the
+      page, click, press keys and type (skills `roves-playtest` and `roves-diagnostics`).
+      Never ship it to players.
 - **Android and iOS (experimental)**: the native WebView tooling of the older Servo-era engine
   (`v0.7.15`, the "mobile pin"), through its `mach bundle --android` / `support/ios/bundle.py` /
   `mach bundle --ios --ios-release`. These need the platform toolchains installed.

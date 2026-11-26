@@ -214,11 +214,15 @@ possible opportunities to delegate more work to external libraries.
 
 ## Agent skills
 
-This repository ships two agent skills, installable with `npx skills add DRincs-Productions/roves`:
+This repository ships three agent skills, installable with `npx skills add DRincs-Productions/roves`:
 `roves` ([`skills/core`](skills/core/SKILL.md)) explains Roves and every command of the
 [`roves` CLI](https://github.com/DRincs-Productions/roves-cli) (`npm i -g @drincs/roves-cli`),
-and `roves-diagnostics` ([`skills/diagnostics`](skills/diagnostics/SKILL.md)) inspects a running
-game through its development MCP bridge. `categories.json` maps each skill to its folder.
+`roves-diagnostics` ([`skills/diagnostics`](skills/diagnostics/SKILL.md)) diagnoses a running
+game through its development MCP bridge, and `roves-playtest`
+([`skills/playtest`](skills/playtest/SKILL.md)) lets an agent play and test it: screenshots and
+frame sequences, page text and controls, HTML/CSS inspection and the PixiJS scene
+([PixiJS devtools reference](skills/playtest/references/pixijs-devtools.md)).
+`categories.json` maps each skill to its folder.
 
 ## Naming: "Roves" vs. "Servo" vs. `servoshell`
 

@@ -41,6 +41,17 @@ Tools:
 | `click` | `{ "x": 100, "y": 60 }`: left click at a window point (CSS pixels at page zoom 1, top-left origin), through the game's normal input path. |
 | `press_key` | `{ "key": "ArrowRight" }`: keydown + keyup of one of ArrowLeft/Right/Up/Down, Enter, Escape, Space, Tab, Backspace, Delete, Home, End, PageUp, PageDown. No character is typed. |
 | `type_text` | `{ "text": "hello" }`: up to 256 printable characters as text input to the focused element. |
+| `screenshot` | `{ "max_width": 640, "format": "jpeg", "quality": 60, "region": {x, y, width, height} }` (all optional): what the window shows, through CDP `Page.captureScreenshot` on the in-process DevTools channel (canvas included), scaled down to `max_width` image pixels. Returns the image plus its size, the captured region and the formula from image pixels to window points. |
+| `watch` | `{ "count": 6, "interval_ms": 200, "max_width": 320, "action": {"click": {x, y}} \| {"key": "Enter"} \| {"text": "..."} }`: an optional input, then a short frame sequence (at most 20 frames, 30 s); frames identical to the previous one are listed but not returned. |
+| `page_snapshot` | Visible page text plus the visible controls (buttons, links, inputs, ARIA roles, outermost `cursor: pointer` elements) with their center in window points, size, disabled state and what covers them, and the canvases. One `evaluate`. |
+| `inspect_element` | `{ "selector": "..." }` or `{ "x": 10, "y": 20 }`: truncated outerHTML, box, ancestors, computed styles (a default set or `styles`), and the matching rules of same-origin stylesheets with source and `@media`/`@supports` conditions. One `evaluate`. |
+| `pixi_scene` | The PixiJS scene, found like the @pixi/devtools backend does (`__PIXI_DEVTOOLS__` from `initDevtools`, then `__PIXI_APP__`, `__PIXI_STAGE__`, `__PIXI_RENDERER__`): renderer, FPS and a bounded node list (path, type, label, text, texture, transform, visibility, event mode, bounds in window points). `{ "path", "depth", "find", "at": {x, y}, "all" }`. One `evaluate`. |
+
+The page probes (`page_snapshot`, `inspect_element`, `pixi_scene`) are fixed functions in
+`server.mjs` sent through `evaluate`: they run with the page's privileges, install nothing in
+the page and need nothing from the game except, for `pixi_scene`, one of the globals above.
+A screenshot needs a compositor frame: a window that never produced one (no GPU frame on a
+headless runner) answers `screenshot: no DevTools reply in time`.
 
 `click`, `press_key` and `type_text` are refused until the game accepts real input: on
 Windows after the page loaded, and for a packaged game once the startup screen showed the
@@ -67,7 +78,7 @@ process itself.
 The page never sees the bridge's endpoint or token. It only gets the read-only boolean
 `window.__ROVES_MCP__ === true` in the top-level game document while the bridge is running,
 set before the game's first script, so a game can call `isMcpEnabled()` of
-`@drincs/roves-api/core` (next release) to switch on development-only test hooks. It is
+`@drincs/roves-api/core` (roves-api 0.10.0 or newer) to switch on development-only test hooks. It is
 `false` in a regular browser, without the bridge, if the bridge failed to start, and in
 iframes. It is a hint, not a security boundary.
 

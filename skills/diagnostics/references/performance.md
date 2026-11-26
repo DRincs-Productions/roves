@@ -1,11 +1,13 @@
-# Measure CEF frame timing
+# Measure frame timing
 
-Use the Windows Release player and Chrome with the same web build, viewport,
-DPR, refresh rate and canvas backing size. Separate cold startup, first opening
-of a screen, repeat opening and idle. Record P95/P99 of displayed frame
-intervals with PresentMon and attribute CPU to the host and Chromium processes.
+Use a Release player on Windows and Chrome with the same web build, viewport, device pixel
+ratio, refresh rate and canvas backing size. Measure cold startup, the first opening of a
+screen, a repeated opening and idle separately. Record the P95 and P99 of displayed frame
+intervals with PresentMon, and attribute CPU to the player and Chromium processes.
 
-Use the player's timing log to correlate host work with the display trace.
-If the game is Pixi based, record the backing size and renderer resolution.
-Compare one change at a time and report the scene and sample size.
-See the [performance backlog](../../../docs/ROVES_PERFORMANCE.md).
+Correlate host work with the display trace through the player's timing log. For a PixiJS
+game, record the canvas backing size and the renderer resolution (`pixi_scene` reports both
+and the ticker FPS). Change one thing at a time and report the scene and the sample size.
+
+A `watch` sequence shows what changed on screen, not how fast: its timestamps include the
+capture round trip, so never use it as a frame-timing measurement.

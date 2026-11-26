@@ -19,7 +19,10 @@
 //          top-level document, absent in a same-origin child frame, no other bridge global),
 //          evaluation (values, objects by value, errors, Promise refusal distinct
 //          from a plain {}, non-JSON symbol refused, page CSP kept), click, key and
-//          text delivered to the page, clean exit and session removal.
+//          text delivered to the page, the page probes (page_snapshot, inspect_element,
+//          pixi_scene on the fixture's duck-typed stage), screenshot and watch (PNG size
+//          matching the reported geometry; required once the player imported a frame,
+//          otherwise only a clean refusal), clean exit and session removal.
 // disabled: the plain package's player (no mcp/enabled) on the fixture, twice: without
 //          --roves-mcp, and with --roves-mcp while the bridge cannot start (its session
 //          directory cannot be created: LOCALAPPDATA or XDG_RUNTIME_DIR points at a file, on
@@ -27,7 +30,9 @@
 //          marker absent in the entry script and the child frame (the host API marker
 //          __ROVES__ present), publish no session record and exit cleanly.
 // package: the package's player launched directly (the package marker turns MCP on);
-//          discovery without a PID, state and evaluation on the packaged game; interaction
+//          discovery without a PID, state and evaluation on the packaged game, the
+//          sample game's Pixi scene through __PIXI_DEVTOOLS__, page_snapshot, a screenshot
+//          (required once the player imported a frame); interaction
 //          is required to succeed only if the game accepts input yet, otherwise to be refused
 //          as not ready; clean exit and session removal.
 //
@@ -55,7 +60,8 @@ const WINDOWS = process.platform === "win32";
 const HOST = WINDOWS ? "roves-cef-nr " : "gate: ";
 const MARKER = "__ROVES_MCP__";
 assert.ok(serverPath, usage);
-const TOOLS = ["click", "evaluate_script", "get_state", "press_key", "type_text"];
+const TOOLS = ["click", "evaluate_script", "get_state", "inspect_element", "page_snapshot", "pixi_scene",
+  "press_key", "screenshot", "type_text", "watch"];
 const log = (line) => process.stdout.write(`roves-mcp-smoke ${line}\n`);
 
 class Client {
@@ -93,6 +99,12 @@ class Client {
     const list = await this.rpc("tools/list", {});
     assert.deepEqual(list.result.tools.map(({ name }) => name).sort(), TOOLS);
     return this;
+  }
+
+  /** The raw tool result ({ content, isError }) or { error } for a protocol-level refusal. */
+  async raw(name, args = {}) {
+    const reply = await this.rpc("tools/call", { name, arguments: args });
+    return reply.error ? { error: reply.error.message } : reply.result;
   }
 
   /** { ok, value, text }: ok=false for a tool error or a protocol-level refusal. */
@@ -400,6 +412,66 @@ async function fixture([exe, fixtureDir, out]) {
     const control = await client.tool("type_text", { text: "a\nb" });
     assert.ok(!control.ok, "control characters were accepted by type_text");
 
+    // Page probes (one evaluate each).
+    const snapshot = await client.value("page_snapshot");
+    const button = snapshot.controls.find(({ id }) => id === "click-target");
+    assert.ok(button, JSON.stringify(snapshot.controls));
+    assert.deepEqual([button.tag, button.x, button.y, button.w, button.h], ["button", 100, 60, 200, 120]);
+    assert.match(snapshot.text, /click target/);
+    const inspected = await client.value("inspect_element", { selector: "#click-target", styles: ["width", "position"] });
+    assert.deepEqual(inspected.computed, { width: "200px", position: "fixed" });
+    assert.ok(inspected.rules.some(({ selector, source }) => selector === "#click-target" && source === "<style>"),
+      JSON.stringify(inspected.rules));
+    assert.equal((await client.value("inspect_element", { x: 20, y: 170 })).element, "input#text-target");
+    const scene = await client.value("pixi_scene");
+    assert.equal(scene.source, "__PIXI_STAGE__");
+    assert.deepEqual(scene.nodes.map(({ path, label }) => [path, label ?? null]),
+      [["/", "fixture-stage"], ["0", "fixture-sprite"]]);
+    assert.deepEqual((await client.value("pixi_scene", { at: { x: 15, y: 25 } })).nodes.map(({ path }) => path), ["0", "/"]);
+    assert.deepEqual((await client.value("pixi_scene", { find: "hidden" })).nodes.map(({ path }) => path), ["1"]);
+    log("page probe checks passed");
+
+    // Screenshots: Page.captureScreenshot needs a compositor frame.
+    const pngSize = (data) => {
+      const png = Buffer.from(data, "base64");
+      assert.equal(png.subarray(1, 4).toString(), "PNG", "not a PNG");
+      return [png.readUInt32BE(16), png.readUInt32BE(20)];
+    };
+    // Chromium rounds the scaled clip: the reported geometry may differ by one pixel.
+    const near = (actual, reported) => {
+      assert.ok(actual.every((v, i) => Math.abs(v - reported[i]) <= 1), `${actual} vs ${reported}`);
+    };
+    const framed = (await client.value("get_state")).frames?.imported > 0;
+    const shot = await client.raw("screenshot", { format: "png", max_width: 100 });
+    if (shot.isError || shot.error) {
+      const why = shot.error ?? shot.content?.[0]?.text;
+      assert.ok(!framed, `screenshot failed although the player imported frames: ${why}`);
+      assert.match(why, /^screenshot: /);
+      log(`screenshot refused without a frame: ${why}`);
+    } else {
+      const [image, text] = shot.content;
+      assert.equal(image.type, "image");
+      assert.equal(image.mimeType, "image/png");
+      const meta = JSON.parse(text.text);
+      near(pngSize(image.data), meta.size);
+      assert.ok(meta.size[0] <= 100 && meta.size[0] >= 99, JSON.stringify(meta));
+      const region = await client.raw("screenshot", { format: "png", max_width: 4096,
+        region: { x: 0, y: 0, width: 200, height: 120 } });
+      const regionMeta = JSON.parse(region.content[1].text);
+      near(pngSize(region.content[0].data), regionMeta.size);
+      assert.deepEqual(regionMeta.region, { x: 0, y: 0, width: 200, height: 120 });
+      const watched = await client.raw("watch", { count: 3, interval_ms: 50, format: "png", max_width: 64 });
+      const frames = JSON.parse(watched.content.at(-1).text).frames;
+      assert.equal(frames.length, 3);
+      assert.equal(watched.content.filter(({ type }) => type === "image").length,
+        frames.filter(({ image }) => image !== undefined).length);
+      const jpeg = await client.raw("screenshot", { max_width: 320 });
+      assert.equal(jpeg.content[0].mimeType, "image/jpeg");
+      log(`screenshot checks passed ${JSON.stringify({ full: meta.size, region: regionMeta.size, frames })}`);
+    }
+    const outsideShot = await client.tool("screenshot", { region: { x: 100000, y: 0, width: 10, height: 10 } });
+    assert.ok(!outsideShot.ok && /outside/.test(outsideShot.text), outsideShot.text);
+
     const after = await client.value("get_state");
     assert.ok(after.input.forwarded >= 7, JSON.stringify(after.input));
     assert.equal(after.input.rejected, 0);
@@ -465,6 +537,24 @@ async function packaged([pkg, out]) {
       assert.ok(!click.ok && /not ready/.test(click.text), click.text);
       log(`startup=${now.startup}: click refused as not ready (expected without accelerated frames)`);
     }
+    // The packaged sample game (visual-novel-template) is a Pixi'VN game, and Pixi'VN's
+    // Game.init always calls @pixi/devtools initDevtools({ app }): pixi_scene must find the
+    // scene through __PIXI_DEVTOOLS__, as the PixiJS devtools extension would.
+    const scene = await until("Pixi scene", 8_000, async () => {
+      const value = await client.value("pixi_scene", { depth: 2, max_nodes: 40 });
+      return { done: value.detected, value };
+    });
+    assert.equal(scene.source, "__PIXI_DEVTOOLS__");
+    assert.ok(scene.nodes.length > 0 && scene.renderer, JSON.stringify(scene));
+    log(`pixi scene ${JSON.stringify({ version: scene.version, renderer: scene.renderer, nodes: scene.nodes.length })}`);
+    const snapshot = await client.value("page_snapshot", { max_items: 20, max_text: 200 });
+    assert.ok(snapshot.canvases.length > 0, JSON.stringify(snapshot));
+    log(`page snapshot controls=${snapshot.controls.length} canvases=${snapshot.canvases.length}`);
+    const shot = await client.raw("screenshot", { max_width: 320 });
+    const shotOk = !shot.error && !shot.isError && shot.content?.[0]?.type === "image";
+    const shotText = shot.error ?? shot.content?.at(-1)?.text;
+    if ((await client.value("get_state")).frames?.imported > 0) assert.ok(shotOk, shotText);
+    log(`screenshot ok=${shotOk} ${shotText}`);
     // The game's own testing bridge (pixi-vn `Game.testing`, `window.pixiVN`) through MCP,
     // last so it cannot delay the checks above: when the game exposes it, `getState()` must
     // answer; a game without it, or an evaluation that does not answer in time, is reported.

@@ -1,3 +1,32 @@
+## 2026-11-26 - MCP bridge: screenshots, page probes, PixiJS scene; playtest skill
+
+Changed: `support/cef-netrender-probe/src/{mcp.rs,mcp_rules.rs,app.rs}`,
+`support/cef-macos-gate/src/session.rs` (shared by the Linux player),
+`support/cef-netrender-probe/mcp/{server.mjs,smoke.mjs,README.md,fixture/game.js}`,
+`skills/playtest/` (new skill `roves-playtest`, with `references/pixijs-devtools.md`),
+`skills/diagnostics/` (rewritten for the CEF player), `skills/core/SKILL.md`,
+`categories.json`, `.github/workflows/validate-skills.yml`, `README.md`, `roves-wiki`.
+What: the bridge gains a `screenshot` method: CDP `Page.captureScreenshot` on welding's
+in-process DevTools channel (the same call welding's own snapshot uses for a windowless
+browser), JPEG/WebP/PNG of the viewport or a region, scaled to a maximum width through the
+clip scale computed from the device scale the player gives CEF (`mcp_rules::shot_clip`,
+unit-tested). The MCP server adds `screenshot`, `watch` (optional input, then a frame
+sequence with identical frames dropped), and three page probes sent as fixed `evaluate`
+expressions: `page_snapshot` (visible text and controls with click coordinates),
+`inspect_element` (markup, box, computed styles, matching same-origin CSS rules, element at a
+point) and `pixi_scene` (the scene found the way the @pixi/devtools backend finds it:
+`__PIXI_DEVTOOLS__`, `__PIXI_APP__`, `__PIXI_STAGE__`, `__PIXI_RENDERER__`).
+Why: user request, an AI agent able to play and test a game with few tokens, inspect HTML/CSS
+and debug PixiJS. The PixiJS Devtools Chrome extension cannot run in the player (CEF Alloy
+OSR loads no extensions or DevTools frontend); `pixi_scene` reads the globals it reads, and
+Pixi'VN's `Game.init` always calls `initDevtools`, so the packaged sample game
+(visual-novel-template) is the end-to-end check in the smoke `package` mode. Rejected:
+`image-size` for image dimensions (requires Node 22, the server supports 20; the bridge
+already reports region and scale). The probes stay inside `server.mjs` so the package layout
+(`mcp/` file list in the workflows, release and roves-cli) is unchanged. A screenshot needs a
+compositor frame: the smoke requires it once the player imported a frame and otherwise only a
+clean `screenshot:` error.
+
 ## 2026-11-26 - macOS player gate on macos-26
 
 Changed: `.github/workflows/cef-macos-gate.yml`, `support/cef-macos-gate/README.md`.

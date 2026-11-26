@@ -12,5 +12,14 @@ for (const type of ["keydown", "keyup"]) {
 addEventListener("keypress", (e) => {
   if (e.isTrusted) fixture.typed += e.key;
 }, true);
+// A duck-typed PixiJS stage for the pixi_scene probe (no renderer: bounds are window points).
+const pixiNode = (label, x, y, width, height, extra = {}) => ({
+  label, x, y, visible: true, alpha: 1, children: [], ...extra,
+  getBounds: () => ({ x, y, width, height }),
+});
+globalThis.__PIXI_STAGE__ = pixiNode("fixture-stage", 0, 0, 200, 120, { children: [
+  pixiNode("fixture-sprite", 10, 20, 50, 40, { texture: { label: "fixture-texture" } }),
+  pixiNode("hidden-layer", 0, 0, 200, 120, { visible: false }),
+] });
 fixture.ready = true;
 console.log("roves-mcp-fixture ready");

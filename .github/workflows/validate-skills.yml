@@ -46,7 +46,7 @@ jobs:
           EOF
           npx --yes skills@1.9.0 add "$GITHUB_WORKSPACE" --skill '*' --agent "$SKILL_AGENT" --list -y
           npx --yes skills@1.9.0 add "$GITHUB_WORKSPACE" --skill '*' --agent "$SKILL_AGENT" --copy -y
-          for pair in roves:core roves-diagnostics:diagnostics; do
+          for pair in roves:core roves-diagnostics:diagnostics roves-playtest:playtest; do
             name="${pair%%:*}" folder="${pair#*:}"
             installed="$(find . -type f -path "*/$name/SKILL.md" -print -quit)"
             test -n "$installed" || { echo "::error::skill $name was not installed"; exit 1; }
@@ -55,3 +55,5 @@ jobs:
           installed="$(find . -type f -path '*/roves-diagnostics/SKILL.md' -print -quit)"
           test -f "$(dirname "$installed")/references/mcp.md"
           test -f "$(dirname "$installed")/references/performance.md"
+          installed="$(find . -type f -path '*/roves-playtest/SKILL.md' -print -quit)"
+          test -f "$(dirname "$installed")/references/pixijs-devtools.md"

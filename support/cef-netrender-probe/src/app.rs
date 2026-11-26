@@ -3142,7 +3142,7 @@ impl Probe {
             let method = call.method();
             let result = match call {
                 Call::State => Ok(self.mcp_state()),
-                Call::Evaluate(_)
+                Call::Evaluate(_) | Call::Screenshot(_)
                     if self
                         .bootstrap
                         .as_ref()
@@ -3153,6 +3153,18 @@ impl Probe {
                 Call::Evaluate(expression) => {
                     if let (Some(bridge), Some(s)) = (self.mcp.as_mut(), self.state.as_mut()) {
                         bridge.evaluate(&mut s.producer, &expression, reply);
+                        self.log
+                            .line(format_args!("mcp call method={method} queued=true"));
+                        continue;
+                    }
+                    Err("the browser is not ready yet".to_owned())
+                },
+                Call::Screenshot(shot) => {
+                    if let (Some(bridge), Some(s)) = (self.mcp.as_mut(), self.state.as_mut()) {
+                        let (width, height) = s.window.size();
+                        let view = (f64::from(width), f64::from(height));
+                        let dpr = f64::from(s.window.display_scale());
+                        bridge.screenshot(&mut s.producer, &shot, view, dpr, reply);
                         self.log
                             .line(format_args!("mcp call method={method} queued=true"));
                         continue;

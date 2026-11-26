@@ -29,7 +29,10 @@
 //! Requests are newline-delimited JSON `{"method": ..., "params": {...}}`, handled on the
 //! main loop of each player: `state` (host-side state, built by the player), `evaluate` (CDP
 //! `Runtime.evaluate` through welding's in-process DevTools channel,
-//! `CefBrowserHost::SendDevToolsMessage`, with the page's CSP kept for `eval`), and
+//! `CefBrowserHost::SendDevToolsMessage`, with the page's CSP kept for `eval`), `screenshot`
+//! (CDP `Page.captureScreenshot` on the same channel, the way welding's own snapshot reads a
+//! windowless browser: JPEG/WebP/PNG of the viewport or a region, scaled to a maximum width
+//! through the clip's `scale`), and
 //! `click`/`press_key`/`type_text`, which go through the players' ordinary SDL -> welding
 //! input translation (`input.rs`, [`click_events`], [`key_events`], [`forward`]). Replies
 //! are one JSON line, `{"value": ...}` or `{"error": "..."}`.
@@ -52,9 +55,9 @@ use welding::CefSurfaceProducer;
 
 use crate::input::Input;
 use crate::mcp_rules::{
-    CONSOLE_MESSAGE_MAX, CONSOLE_RING, MAX_EXPRESSION, MAX_REQUEST_LINE, MAX_RESULT, McpKey,
-    RecordOs, TOKEN_BYTES, hex, point_in_window, record_dir, token_matches, truncate_chars,
-    valid_text, write_private,
+    CONSOLE_MESSAGE_MAX, CONSOLE_RING, MAX_EXPRESSION, MAX_REQUEST_LINE, MAX_RESULT, MAX_SHOT_DATA,
+    McpKey, RecordOs, ShotFormat, TOKEN_BYTES, hex, point_in_window, record_dir, shot_clip,
+    token_matches, truncate_chars, valid_text, write_private,
 };
 
 /// CDP message ids of the bridge start here, far from welding's own screenshot ids (from 1).
@@ -67,6 +70,8 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// A pending `evaluate` with no CDP reply within this time gets an error.
 const EVALUATE_TIMEOUT: Duration = Duration::from_secs(5);
+/// A pending `screenshot` with no CDP reply within this time gets an error.
+const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Script time limit handed to `Runtime.evaluate` (milliseconds).
 const SCRIPT_TIMEOUT_MS: u64 = 1000;
 /// Requests queued between the transport thread and the main loop.
@@ -106,10 +111,20 @@ pub(crate) fn source(switch: bool, resources: Option<&Path>) -> Option<Source> {
     }
 }
 
+/// A `screenshot` request: encoding, quality (JPEG/WebP), widest image in pixels, and an
+/// optional region `[x, y, width, height]` in CSS pixels (default the whole viewport).
+pub(crate) struct Shot {
+    pub(crate) format: ShotFormat,
+    pub(crate) quality: u8,
+    pub(crate) max_width: u32,
+    pub(crate) region: Option<[f64; 4]>,
+}
+
 /// One parsed request.
 pub(crate) enum Call {
     State,
     Evaluate(String),
+    Screenshot(Shot),
     Click { x: f64, y: f64 },
     PressKey(McpKey),
     TypeText(String),
@@ -120,6 +135,7 @@ impl Call {
         match self {
             Call::State => "state",
             Call::Evaluate(_) => "evaluate",
+            Call::Screenshot(_) => "screenshot",
             Call::Click { .. } => "click",
             Call::PressKey(_) => "press_key",
             Call::TypeText(_) => "type_text",
@@ -145,21 +161,27 @@ struct Request {
     reply: oneshot::Sender<String>,
 }
 
-/// Which CDP reply a pending evaluation waits for.
+/// Which CDP reply a pending request waits for.
 #[derive(Clone, Copy)]
 enum Stage {
     /// `Runtime.evaluate` by reference: tells a Promise from other objects.
     Evaluate,
     /// `Runtime.callFunctionOn` returning the evaluated object by value.
     ByValue,
+    /// `Page.captureScreenshot` of `region` (CSS pixels) scaled by `scale`.
+    Screenshot {
+        format: ShotFormat,
+        region: [f64; 4],
+        scale: f64,
+    },
 }
 
 struct Pending {
     reply: Reply,
     deadline: Instant,
     stage: Stage,
-    /// Object group holding this evaluation's remote objects; released when it ends.
-    group: String,
+    /// Object group holding an evaluation's remote objects; released when it ends.
+    group: Option<String>,
 }
 
 /// Main-loop side of the bridge. Dropping it removes the session record (and the unix
@@ -474,6 +496,48 @@ fn parse(line: &str) -> Result<Call, String> {
             }
             Call::Evaluate(expression)
         },
+        "screenshot" => {
+            let format = match params.get("format") {
+                None => ShotFormat::Jpeg,
+                Some(name) => name
+                    .as_str()
+                    .and_then(ShotFormat::parse)
+                    .ok_or("screenshot: format must be \"jpeg\", \"webp\" or \"png\"")?,
+            };
+            let quality = match params.get("quality") {
+                None => 70,
+                Some(q) => q
+                    .as_u64()
+                    .filter(|q| (1..=100).contains(q))
+                    .and_then(|q| u8::try_from(q).ok())
+                    .ok_or("screenshot: quality must be an integer 1..=100")?,
+            };
+            let max_width = match params.get("max_width") {
+                None => 1280,
+                Some(w) => w
+                    .as_u64()
+                    .and_then(|w| u32::try_from(w).ok())
+                    .ok_or("screenshot: max_width must be a positive integer")?,
+            };
+            let region = match params.get("region") {
+                None | Some(Value::Null) => None,
+                Some(region) => {
+                    let field = |name: &str| {
+                        region
+                            .get(name)
+                            .and_then(Value::as_f64)
+                            .ok_or_else(|| format!("screenshot: region needs number {name}"))
+                    };
+                    Some([field("x")?, field("y")?, field("width")?, field("height")?])
+                },
+            };
+            Call::Screenshot(Shot {
+                format,
+                quality,
+                max_width,
+                region,
+            })
+        },
         "click" => Call::Click {
             x: number("x")?,
             y: number("y")?,
@@ -536,8 +600,8 @@ impl Bridge {
             .map_err(|error| format!("{method}: {error}"))
     }
 
-    /// Ends an evaluation: answers it and releases its object group (the reply to the
-    /// release carries no pending id and is dropped by `poll_devtools`).
+    /// Ends a request: answers it and releases an evaluation's object group (the reply to
+    /// the release carries no pending id and is dropped by `poll_devtools`).
     fn finish<P: CefSurfaceProducer>(
         &mut self,
         producer: &mut P,
@@ -545,11 +609,61 @@ impl Bridge {
         result: Result<Value, String>,
     ) {
         pending.reply.send(result);
-        let _ = self.send_cdp(
-            producer,
-            "Runtime.releaseObjectGroup",
-            json!({ "objectGroup": pending.group }),
-        );
+        if let Some(group) = pending.group {
+            let _ = self.send_cdp(
+                producer,
+                "Runtime.releaseObjectGroup",
+                json!({ "objectGroup": group }),
+            );
+        }
+    }
+
+    /// Starts `Page.captureScreenshot` of the page viewport (`view`, CSS pixels, shown at
+    /// device scale `dpr`, the scale factor the player gives CEF) or of `shot.region`, from
+    /// the compositor surface (`fromSurface`), without capturing beyond the viewport.
+    pub(crate) fn screenshot<P: CefSurfaceProducer>(
+        &mut self,
+        producer: &mut P,
+        shot: &Shot,
+        view: (f64, f64),
+        dpr: f64,
+        reply: Reply,
+    ) {
+        let [x, y, width, height, scale] = match shot_clip(view, dpr, shot.region, shot.max_width) {
+            Ok(clip) => clip,
+            Err(error) => return reply.send(Err(error)),
+        };
+        let mut params = json!({
+            "format": shot.format.name(),
+            "clip": { "x": x, "y": y, "width": width, "height": height, "scale": scale },
+            "fromSurface": true,
+            "captureBeyondViewport": false,
+            "optimizeForSpeed": true,
+        });
+        if shot.format != ShotFormat::Png {
+            params["quality"] = json!(shot.quality);
+        }
+        let dpr = if dpr.is_finite() && dpr > 0.0 {
+            dpr
+        } else {
+            1.0
+        };
+        let pending = Pending {
+            reply,
+            deadline: Instant::now() + SCREENSHOT_TIMEOUT,
+            stage: Stage::Screenshot {
+                format: shot.format,
+                region: [x, y, width, height],
+                scale: scale * dpr,
+            },
+            group: None,
+        };
+        match self.send_cdp(producer, "Page.captureScreenshot", params) {
+            Ok(id) => {
+                self.pending.insert(id, pending);
+            },
+            Err(error) => self.finish(producer, pending, Err(error)),
+        }
     }
 
     /// Starts `Runtime.evaluate` in the page's main world: synchronous only
@@ -583,7 +697,7 @@ impl Bridge {
             reply,
             deadline: Instant::now() + EVALUATE_TIMEOUT,
             stage: Stage::Evaluate,
-            group,
+            group: Some(group),
         };
         match self.send_cdp(producer, "Runtime.evaluate", params) {
             Ok(id) => {
@@ -594,8 +708,8 @@ impl Bridge {
     }
 
     /// One DevTools message not consumed by the page marker registration: advances the
-    /// matching evaluation. Other messages (Page domain events, `releaseObjectGroup` replies)
-    /// are dropped.
+    /// matching evaluation or answers the matching screenshot. Other messages (Page domain
+    /// events, `releaseObjectGroup` replies) are dropped.
     pub(crate) fn devtools_message<P: CefSurfaceProducer>(
         &mut self,
         producer: &mut P,
@@ -608,6 +722,15 @@ impl Bridge {
         else {
             return;
         };
+        if let Stage::Screenshot {
+            format,
+            region,
+            scale,
+        } = pending.stage
+        {
+            let result = screenshot_value(message, format, region, scale);
+            return self.finish(producer, pending, result);
+        }
         match (pending.stage, evaluation_step(message)) {
             (Stage::Evaluate, Step::Fetch(object)) => {
                 let params = json!({
@@ -640,10 +763,11 @@ impl Bridge {
                 Err("evaluate: the result is not JSON-serializable".into()),
             ),
             (Stage::ByValue, Step::Done(result)) => self.finish(producer, pending, result),
+            (Stage::Screenshot { .. }, _) => unreachable!("answered above"),
         }
     }
 
-    /// Answers evaluations with no CDP reply in time.
+    /// Answers evaluations and screenshots with no CDP reply in time.
     pub(crate) fn expire<P: CefSurfaceProducer>(&mut self, producer: &mut P) {
         let now = Instant::now();
         let expired: Vec<i64> = self
@@ -654,10 +778,14 @@ impl Bridge {
             .collect();
         for id in expired {
             if let Some(pending) = self.pending.remove(&id) {
+                let method = match pending.stage {
+                    Stage::Screenshot { .. } => "screenshot",
+                    Stage::Evaluate | Stage::ByValue => "evaluate",
+                };
                 self.finish(
                     producer,
                     pending,
-                    Err("evaluate: no DevTools reply in time".into()),
+                    Err(format!("{method}: no DevTools reply in time")),
                 );
             }
         }
@@ -811,6 +939,37 @@ enum Step {
     Done(Result<Value, String>),
     /// A non-Promise object by reference (`objectId`), to be fetched by value.
     Fetch(String),
+}
+
+/// Maps a CDP `Page.captureScreenshot` reply: the base64 image, its MIME type, the captured
+/// `region` (CSS pixels, window points at page zoom 1) and the `scale` from CSS pixels to
+/// image pixels, so an image point (px, py) is the window point
+/// (region.x + px / scale, region.y + py / scale).
+fn screenshot_value(
+    message: &Value,
+    format: ShotFormat,
+    region: [f64; 4],
+    scale: f64,
+) -> Result<Value, String> {
+    if let Some(error) = message.pointer("/error/message").and_then(Value::as_str) {
+        return Err(format!("screenshot: {error}"));
+    }
+    let data = message
+        .pointer("/result/data")
+        .and_then(Value::as_str)
+        .ok_or("screenshot: DevTools reply without image data")?;
+    if data.is_empty() || data.len() > MAX_SHOT_DATA {
+        return Err(format!(
+            "screenshot: image data must be 1..={MAX_SHOT_DATA} bytes of base64"
+        ));
+    }
+    let [x, y, width, height] = region;
+    Ok(json!({
+        "mime": format.mime(),
+        "data": data,
+        "region": { "x": x, "y": y, "width": width, "height": height },
+        "scale": scale,
+    }))
 }
 
 /// Maps a CDP `Runtime.evaluate` (by reference) or `Runtime.callFunctionOn` (by value) reply.

@@ -292,6 +292,85 @@ pub(crate) fn valid_text(text: &str) -> bool {
     (1..=MAX_TEXT).contains(&count) && !text.chars().any(char::is_control)
 }
 
+/// Widest `screenshot` image, in image pixels.
+pub(crate) const MAX_SHOT_WIDTH: u32 = 4096;
+/// Longest base64 screenshot passed on to the client, in bytes.
+pub(crate) const MAX_SHOT_DATA: usize = 16 * 1024 * 1024;
+
+/// Image encoding of a `screenshot` (CDP `Page.captureScreenshot` `format`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShotFormat {
+    Jpeg,
+    Png,
+    Webp,
+}
+
+impl ShotFormat {
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        match name {
+            "jpeg" => Some(ShotFormat::Jpeg),
+            "png" => Some(ShotFormat::Png),
+            "webp" => Some(ShotFormat::Webp),
+            _ => None,
+        }
+    }
+
+    /// The CDP `format` value.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            ShotFormat::Jpeg => "jpeg",
+            ShotFormat::Png => "png",
+            ShotFormat::Webp => "webp",
+        }
+    }
+
+    pub(crate) fn mime(self) -> &'static str {
+        match self {
+            ShotFormat::Jpeg => "image/jpeg",
+            ShotFormat::Png => "image/png",
+            ShotFormat::Webp => "image/webp",
+        }
+    }
+}
+
+/// CDP `Page.captureScreenshot` clip `[x, y, width, height, scale]` for a shot of a page
+/// viewport of `view` CSS pixels shown at device scale `dpr`: `region` (CSS pixels, default
+/// the whole viewport) clipped to the viewport, and a scale so the image is at most
+/// `max_width` pixels wide (Chromium multiplies the clip by `scale` and the device scale),
+/// never enlarged beyond device pixels.
+pub(crate) fn shot_clip(
+    view: (f64, f64),
+    dpr: f64,
+    region: Option<[f64; 4]>,
+    max_width: u32,
+) -> Result<[f64; 5], String> {
+    if !(1..=MAX_SHOT_WIDTH).contains(&max_width) {
+        return Err(format!(
+            "screenshot: max_width must be 1..={MAX_SHOT_WIDTH}"
+        ));
+    }
+    if !(view.0 > 0.0 && view.1 > 0.0) {
+        return Err("screenshot: the window has no size".into());
+    }
+    let [x, y, width, height] = region.unwrap_or([0.0, 0.0, view.0, view.1]);
+    if ![x, y, width, height].iter().all(|v| v.is_finite()) || width <= 0.0 || height <= 0.0 {
+        return Err("screenshot: region needs finite x, y and a positive width, height".into());
+    }
+    let (left, top) = (x.max(0.0), y.max(0.0));
+    let (right, bottom) = ((x + width).min(view.0), (y + height).min(view.1));
+    if right - left < 1.0 || bottom - top < 1.0 {
+        return Err("screenshot: region is outside the window".into());
+    }
+    let dpr = if dpr.is_finite() && dpr > 0.0 {
+        dpr
+    } else {
+        1.0
+    };
+    let width = right - left;
+    let scale = (f64::from(max_width) / (width * dpr)).min(1.0);
+    Ok([left, top, width, bottom - top, scale])
+}
+
 /// At most `max` characters of `text` (no allocation when it already fits).
 pub(crate) fn truncate_chars(text: &str, max: usize) -> &str {
     match text.char_indices().nth(max) {
@@ -526,6 +605,53 @@ mod tests {
         assert!(!valid_text("a\nb"));
         assert!(!valid_text("\t"));
         assert!(!valid_text("\u{7f}"));
+    }
+
+    #[test]
+    fn shots_scale_down_to_max_width_and_stay_inside_the_window() {
+        // Whole 1280x720 viewport at device scale 2 into 640 px: 640 / 2560.
+        assert_eq!(
+            shot_clip((1280.0, 720.0), 2.0, None, 640),
+            Ok([0.0, 0.0, 1280.0, 720.0, 0.25])
+        );
+        // Never enlarged beyond device pixels.
+        assert_eq!(
+            shot_clip((800.0, 600.0), 1.0, None, 4096),
+            Ok([0.0, 0.0, 800.0, 600.0, 1.0])
+        );
+        // A region is clipped to the viewport.
+        assert_eq!(
+            shot_clip((800.0, 600.0), 1.0, Some([-10.0, 500.0, 200.0, 300.0]), 95),
+            Ok([0.0, 500.0, 190.0, 100.0, 0.5])
+        );
+        // An invalid device scale counts as 1.
+        assert_eq!(
+            shot_clip((100.0, 100.0), f64::NAN, None, 50),
+            Ok([0.0, 0.0, 100.0, 100.0, 0.5])
+        );
+        for (view, region, max_width) in [
+            ((800.0, 600.0), None, 0),
+            ((800.0, 600.0), None, MAX_SHOT_WIDTH + 1),
+            ((0.0, 600.0), None, 640),
+            ((800.0, 600.0), Some([900.0, 0.0, 10.0, 10.0]), 640),
+            ((800.0, 600.0), Some([0.0, 0.0, 0.0, 10.0]), 640),
+            ((800.0, 600.0), Some([f64::NAN, 0.0, 10.0, 10.0]), 640),
+        ] {
+            assert!(
+                shot_clip(view, 1.0, region, max_width).is_err(),
+                "{region:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shot_formats_round_trip() {
+        for format in [ShotFormat::Jpeg, ShotFormat::Png, ShotFormat::Webp] {
+            assert_eq!(ShotFormat::parse(format.name()), Some(format));
+            assert!(format.mime().ends_with(format.name()));
+        }
+        assert_eq!(ShotFormat::parse("JPEG"), None);
+        assert_eq!(ShotFormat::parse("gif"), None);
     }
 
     #[test]
