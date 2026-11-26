@@ -8,7 +8,7 @@ renderer. The **packaged-game slice** (section "Packaged game") was committed in
 the player profile") is implemented and type-checked locally only, with no CI result yet. No
 real Mac has run either mode.
 
-First non-Windows step of the CEF + SDL3 + wgpu player (`support/cef-netrender-probe`,
+First non-Windows step of the CEF + SDL3 + wgpu player (`support/cef-windows-player`,
 Windows only). It answers one question with the same maintained producer and renderer as
 Windows: does CEF's **accelerated off-screen** frame reach a wgpu device that also presents
 to an **SDL3** window on macOS, with **Chromium's sandbox on**? There is no CEF windowed
@@ -26,7 +26,7 @@ untouched.
 | `sdl3` | 0.20 (SDL 3.4.16) | `build-from-source-static` (feature `bundled-sdl`) + `raw-window-handle` |
 | Rust | 1.99.1 (MSRV 1.97.1) | as the Windows workflow |
 
-`Cargo.lock` was seeded from `support/cef-netrender-probe/Cargo.lock`; resolving this crate
+`Cargo.lock` was seeded from `support/cef-windows-player/Cargo.lock`; resolving this crate
 only removed packages (ab_glyph, Netrender, ...) and added none, so every shared
 package, macOS-only ones included (objc2, objc2-metal, objc2-io-surface, libloading), has the
 Windows player's version. The packaged-game slice re-seeded it the same way: axum 0.8.9,
@@ -122,7 +122,7 @@ The same binary becomes a minimal player when its bundle contains
 `Contents/Resources/game/index.html` (`src/player.rs`); otherwise it runs the fixture gate.
 Opening such an `.app` plays the game: no switch, no debug server.
 
-- **Serving**: `support/cef-window-probe/src/server.rs`, compiled through `#[path]` exactly
+- **Serving**: `support/cef-windows-player/src/server.rs`, compiled through `#[path]` exactly
   as the Windows player does (axum + tower-http `ServeDir` on `127.0.0.1`, port 0 = a new
   origin per run, `Cache-Control: no-cache`, per-instance ETags). It starts before CEF (the
   origin is the browser's initial URL) and stops after `cef::shutdown`. The game files are
@@ -165,7 +165,7 @@ shows the bundle's `.icns`, section "Application icon"):
 
 - **Host API marker**: `window.__ROVES__` (read by `isAvailable()` of
   `@drincs/roves-api/core`) is registered before the game document exactly as on Windows:
-  `support/cef-netrender-probe/src/page_init.rs` (now generic over welding's
+  `support/cef-windows-player/src/page_init.rs` (now generic over welding's
   `CefSurfaceProducer`) enables the CDP Page domain and calls
   `Page.addScriptToEvaluateOnNewDocument` through welding's in-process DevTools channel
   (`devtools_protocol`, `CefBrowserHost::SendDevToolsMessage`; no remote-debugging port),
@@ -174,7 +174,7 @@ shows the bundle's `.icns`, section "Application icon"):
   loaded once the registration settled (`gate: page markers registered`, or `unavailable`
   after 10 s, then the game loads without the marker). With the local MCP bridge running
   (section "Local MCP bridge") the same script also defines `window.__ROVES_MCP__`.
-- **Input** (`support/cef-netrender-probe/src/input.rs`): SDL3 mouse move/buttons (click
+- **Input** (`support/cef-windows-player/src/input.rs`): SDL3 mouse move/buttons (click
   count from CEF), wheel (120 per line, as on Windows), key down/up, committed text
   (`SDL_StartTextInput`; IME composition is not forwarded, as on Windows), focus on the first
   turn after load-end, visibility on minimize/occlusion, display-scale changes and the page's
@@ -215,9 +215,9 @@ shows the bundle's `.icns`, section "Application icon"):
 Packaged-game mode only (the fixture gate keeps black): from the first present until the
 first game frame the window shows the Windows player's startup screen, same content and
 rules: dark background, the Roves logo and the MetalMania "Roves" wordmark of
-`support/cef-netrender-probe/src/splash.rs` (`#[path]`) and the indeterminate loading bar,
+`support/cef-windows-player/src/splash.rs` (`#[path]`) and the indeterminate loading bar,
 placed by `game_rules::splash_layout`/`splash_indicator`. The wordmark is rasterized at build
-time by the shared `support/cef-netrender-probe/build_wordmark.rs` (this gate's `build.rs`,
+time by the shared `support/cef-windows-player/build_wordmark.rs` (this gate's `build.rs`,
 `ab_glyph`, font `resources/fonts/MetalMania-Regular.ttf`, SIL OFL 1.1), so sparse checkouts
 need `resources/fonts`. `src/startup_screen.rs` composes the static column on the CPU once per
 window size into one texture shown 1:1 by the frame path's `TextureBlitter`; only the bar's
@@ -281,7 +281,7 @@ addressed.
 ## Saves and the player profile
 
 The macOS counterpart of the Windows player's persistent profile (Windows README "Saves and
-the player profile"), with the same rules: `support/cef-netrender-probe/src/game_rules.rs` is
+the player profile"), with the same rules: `support/cef-windows-player/src/game_rules.rs` is
 compiled here through `#[path]`, unchanged (file names, `player_profile_name`, origin-port
 parsing, plus the origin check and load statuses `src/player.rs` used to duplicate). Only the
 platform glue is in `src/profile.rs`.
@@ -336,9 +336,9 @@ and `chrome/browser/process_singleton_posix.cc` added):
 ## Local MCP bridge
 
 Development only, off by default: the Windows player's local MCP bridge
-(`support/cef-netrender-probe/src/mcp.rs` and `mcp_rules.rs` through `#[path]`; Windows
+(`support/cef-windows-player/src/mcp.rs` and `mcp_rules.rs` through `#[path]`; Windows
 player README "Local MCP bridge"; client instructions in
-`support/cef-netrender-probe/mcp/README.md`). A packaged-game launch starts it with
+`support/cef-windows-player/mcp/README.md`). A packaged-game launch starts it with
 `--roves-mcp`, or when the package contains `Contents/Resources/mcp/enabled` inside the
 `.app` (only the MCP-enabled development package has it); `--roves-mcp` without a packaged
 game is a usage error. Off means no socket, no session record and no `gate: mcp` line.
@@ -373,7 +373,7 @@ game is a usage error. Off means no socket, no session record and no `gate: mcp`
 
 CI (`.github/workflows/cef-macos-gate.yml`, after the Steam variant): the stand-alone
 `mcp_rules` tests (including the unix directory 0700/owner and record 0600 test), then
-`smoke.mjs` (`support/cef-netrender-probe/mcp/smoke.mjs`) three times. **fixture**: the MCP
+`smoke.mjs` (`support/cef-windows-player/mcp/smoke.mjs`) three times. **fixture**: the MCP
 fixture temporarily as the MCP package's game, launched with `--roves-mcp`: record and
 socket in the 0700 directory (both 0600), unauthenticated connections answered with nothing,
 discovery by PID, state, the `isMcpEnabled()` marker (entry script, top level only),

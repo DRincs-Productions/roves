@@ -10,7 +10,7 @@ name: 'Test: Linux player'
 # Hosted runners have no GPU and no /dev/dri: Vulkan is Mesa lavapipe (CPU), so the gate
 # selects CEF's software output (OnPaint uploaded by the vendored welding, README "Software
 # paint") and must pass with `evidence=software` (exit 0, fixture colour read back); that is
-# never GPU-import evidence. Exit 2 (no frame) is an error on a CPU adapter. Separate from cef-netrender-probe.yml
+# never GPU-import evidence. Exit 2 (no frame) is an error on a CPU adapter. Separate from cef-windows-player.yml
 # (Windows) and cef-macos-gate.yml (macOS), both unchanged.
 # The same gate directory then packages the UNMODIFIED production web build of
 # DRincs-Productions/visual-novel-template (same pin and commands as the Windows and macOS
@@ -60,12 +60,11 @@ jobs:
           sparse-checkout: |
             support/cef-linux-gate
             support/vendor/wgpu-weld
-            support/cef-window-probe/src
-            support/cef-netrender-probe/src
-            support/cef-netrender-probe/mcp
+            support/cef-windows-player/src
+            support/cef-windows-player/mcp
             support/cef-macos-gate/src
             support/cef-macos-gate/player-fixture
-            support/cef-netrender-probe/host-api-fixture
+            support/cef-windows-player/host-api-fixture
             resources/fonts
           sparse-checkout-cone-mode: true
       - uses: dtolnay/rust-toolchain@master
@@ -689,12 +688,12 @@ jobs:
           echo "STEAM_GATE=$gate" >> "$GITHUB_ENV"
           echo "STEAM_GATE_DIR=$out" >> "$GITHUB_ENV"
       # Steam variant under EMULATION, never evidence about the real Steam client (the Windows
-      # player's step in cef-netrender-probe.yml): the pinned, SHA-256-checked Goldberg/GSE
-      # Linux release (gbe_fork, LGPL-3.0; same tag, asset and digest as steamworks-gate.yml's
-      # emulation job) replaces libsteam_api.so offline with Valve's public test App ID 480.
+      # player's step in cef-windows-player.yml): the pinned, SHA-256-checked Goldberg/GSE
+      # Linux release (gbe_fork, LGPL-3.0; same tag, asset and digest as the former
+      # standalone Steamworks gate) replaces libsteam_api.so offline with Valve's public test App ID 480.
       # The Steam package is changed in place for one launch and restored afterwards (the
       # uploaded package keeps the redistributable and the template): the game is
-      # support/cef-netrender-probe/host-api-fixture with a fresh persistent profile (saves
+      # support/cef-windows-player/host-api-fixture with a fresh persistent profile (saves
       # need it), which calls steam is_available -> true, get_app_id -> 480,
       # unlock/is_unlocked ACH_WIN_ONE_GAME, set/get stat NumGames, store_stats (ids declared
       # in the emulator's steam_settings), writes a save, then core/exit. Steamworks must shut
@@ -739,7 +738,7 @@ jobs:
             cp "$real" "$pkg/libsteam_api.so"
           }
           trap restore EXIT
-          cp -a support/cef-netrender-probe/host-api-fixture "$game"
+          cp -a support/cef-windows-player/host-api-fixture "$game"
           mkdir -p "$settings"
           cp "$work/steam_interfaces.txt" "$settings/"
           # Valve's public test app: next to the executable (the player's dev convention) and
@@ -796,7 +795,7 @@ jobs:
             echo "::notice::Steam host API verified under EMULATION (GSE $GSE_TAG, App ID 480), not against the real Steam client"
           fi
           test "$failed" = 0
-      # ── Local MCP bridge (support/cef-netrender-probe/mcp/README.md) ────────────────
+      # ── Local MCP bridge (support/cef-windows-player/mcp/README.md) ────────────────
       # The MCP-enabled development package: a copy of the standard package (same executable,
       # same packaged template; chrome-sandbox root 4755 again, cp cannot keep its owner) plus
       # mcp/ (server.mjs, README, package files and its `npm ci --omit=dev` node_modules) and
@@ -812,7 +811,7 @@ jobs:
           # directory (0700, owner) and record (0600) tests.
           rules="$RUNNER_TEMP/mcp-rules-tests"
           mkdir -p "$rules"
-          rustc --edition 2024 --test support/cef-netrender-probe/src/mcp_rules.rs -o "$rules/mcp_rules"
+          rustc --edition 2024 --test support/cef-windows-player/src/mcp_rules.rs -o "$rules/mcp_rules"
           "$rules/mcp_rules"
           out="$RUNNER_TEMP/gate-app-mcp"
           test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
@@ -822,12 +821,12 @@ jobs:
           mcp="$out/mcp"
           mkdir -p "$mcp"
           for file in server.mjs package.json package-lock.json README.md; do
-            cp "support/cef-netrender-probe/mcp/$file" "$mcp/"
+            cp "support/cef-windows-player/mcp/$file" "$mcp/"
           done
           (cd "$mcp" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund)
           touch "$mcp/enabled"
           # Discovery smoke of the packaged server without a game (tool list, clean error).
-          node support/cef-netrender-probe/mcp/smoke.mjs list-only "$mcp/server.mjs"
+          node support/cef-windows-player/mcp/smoke.mjs list-only "$mcp/server.mjs"
           for required in roves-cef-linux-gate libcef.so game/index.html mcp/server.mjs mcp/enabled mcp/README.md \
               mcp/node_modules/@modelcontextprotocol/server/package.json; do
             test -e "$out/$required" || { echo "::error::MCP package lacks $required"; exit 1; }
@@ -839,7 +838,7 @@ jobs:
           echo "::notice::MCP package: $(cd "$mcp" && npm ls --omit=dev --depth=0 2>/dev/null | tail -n +2 | tr -d '\n')"
           echo "MCP_GATE_DIR=$out" >> "$GITHUB_ENV"
       # Real interaction through the unix-socket bridge: the MCP fixture
-      # (support/cef-netrender-probe/mcp/fixture) temporarily as the MCP package's game,
+      # (support/cef-windows-player/mcp/fixture) temporarily as the MCP package's game,
       # launched with --roves-mcp under Xvfb. Required (smoke.mjs fixture): session record and
       # socket in the 0700 per-user directory ($XDG_RUNTIME_DIR/roves/mcp, else
       # ~/.local/state/roves/mcp; both 0600), two unauthenticated connections answered with
@@ -858,12 +857,12 @@ jobs:
           mv "$game" "$out/template-game"
           restore() { rm -rf "$game"; mv "$out/template-game" "$game"; }
           trap restore EXIT
-          cp -a support/cef-netrender-probe/mcp/fixture "$game"
+          cp -a support/cef-windows-player/mcp/fixture "$game"
           echo "::notice::session directory base XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}"
           set +e
-          timeout -k 10 420 xvfb-run -a -s "-screen 0 1280x800x24" node support/cef-netrender-probe/mcp/smoke.mjs fixture \
+          timeout -k 10 420 xvfb-run -a -s "-screen 0 1280x800x24" node support/cef-windows-player/mcp/smoke.mjs fixture \
             "$MCP_GATE_DIR/mcp/server.mjs" "$MCP_GATE_DIR/roves-cef-linux-gate" \
-            support/cef-netrender-probe/mcp/fixture "$out"
+            support/cef-windows-player/mcp/fixture "$out"
           code=$?
           set -e
           grep -E '^gate: (mcp (enabled|unavailable|session)|page markers|load-end|NO_|PASS|FAIL|exit code=)' "$out/game.log" \
@@ -888,10 +887,10 @@ jobs:
           mv "$game" "$out/template-game"
           restore() { rm -rf "$game"; mv "$out/template-game" "$game"; }
           trap restore EXIT
-          cp -a support/cef-netrender-probe/mcp/fixture "$game"
+          cp -a support/cef-windows-player/mcp/fixture "$game"
           set +e
-          timeout -k 10 420 xvfb-run -a -s "-screen 0 1280x800x24" node support/cef-netrender-probe/mcp/smoke.mjs disabled \
-            "$MCP_GATE_DIR/mcp/server.mjs" "$GATE" support/cef-netrender-probe/mcp/fixture "$out"
+          timeout -k 10 420 xvfb-run -a -s "-screen 0 1280x800x24" node support/cef-windows-player/mcp/smoke.mjs disabled \
+            "$MCP_GATE_DIR/mcp/server.mjs" "$GATE" support/cef-windows-player/mcp/fixture "$out"
           code=$?
           set -e
           for case in off unavailable; do
@@ -913,7 +912,7 @@ jobs:
           out="$RUNNER_TEMP/mcp-package-run"
           test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
           set +e
-          timeout -k 10 300 xvfb-run -a -s "-screen 0 1280x800x24" node support/cef-netrender-probe/mcp/smoke.mjs package \
+          timeout -k 10 300 xvfb-run -a -s "-screen 0 1280x800x24" node support/cef-windows-player/mcp/smoke.mjs package \
             "$MCP_GATE_DIR/mcp/server.mjs" "$MCP_GATE_DIR" "$out"
           code=$?
           set -e

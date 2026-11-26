@@ -1,3 +1,22 @@
+## 2026-11-26 - Windows player renamed; window probe, Steamworks gate and perf benches removed
+
+Changed: `support/cef-netrender-probe` -> `support/cef-windows-player` (crate and executable
+`roves_cef_windows_player`, log prefix `roves-cef-win`, CI scratch folders `cef-win-*`),
+`.github/workflows/cef-netrender-probe.yml` -> `cef-windows-player.yml` (artifacts
+`cef-windows-player-*`), `support/cef-window-probe/src/{server,host_api}.rs` and its
+`fixtures/static-compat` moved into the Windows player; removed the rest of
+`support/cef-window-probe` and `cef-window-probe.yml`, `support/steamworks-gate` and
+`steamworks-gate.yml`, and `support/perf`. Every `#[path]`, workflow path, `release.yml`,
+`AGENTS.md`, `TODO.md`, READMEs and docs follow.
+Why: user decision. The old name described the removed Netrender comparison. The stage-1
+window probe (CEF 156) was never part of a release; the players only compiled its loopback
+server and host API, which now live with the Windows player. The standalone Steamworks gate
+is superseded by the players' Steam variant and its emulation checks (same gbe_fork release).
+The `support/perf` pages benchmarked the Servo and Blitz engines, both gone; the README
+linked a missing `support/perf/README.md`. The published release assets, the packages'
+contents (`play.exe`, `play.dll`) and the players' profile folders are unchanged.
+`cef-host-api-tests` (73 tests, including the moved server and fixture) passes locally.
+
 ## 2026-11-26 - Netrender removed
 
 Changed: removed `support/netrender-shared-device-proof/`, `.github/workflows/netrender-proof.yml`

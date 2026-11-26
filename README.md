@@ -1,7 +1,7 @@
 # Roves
 
 > **Branch `codex/cef-sdl3-wgpu-probe`:** this branch carries only the CEF + SDL3 + wgpu
-> candidate player (`support/cef-netrender-probe`, built by its own workflow; see its
+> candidate player (`support/cef-windows-player`, built by its own workflow; see its
 > README). The Servo + V8 engine sources, `mach` and their build workflows were removed
 > here on 2026-11-23, so the build, `mach bundle` and platform instructions below describe
 > `main` and do not apply to this branch's checkout. Its packaged Windows player opens on a
@@ -624,8 +624,7 @@ total process CPU remains about 11 core-seconds and observed private memory rise
 These headless arithmetic probes do not establish game frame pacing or CPU parity.
 Animation comparison fixtures omit FPS polling; the Three.js panel releases its scene
 resources and canvas when unmounted.
-Downloaded CI builds pass the numerical and WebGL resize/readback checks; reproducible
-API benchmarks live in [`support/perf`](./support/perf/README.md), with results and scope in
+Downloaded CI builds pass the numerical and WebGL resize/readback checks; results and scope are in
 [`ROVES_PERFORMANCE.md`](./docs/ROVES_PERFORMANCE.md). These measurements do not establish whole-game parity with Chrome.
 
 Windows uses mimalloc by default; `--features system-allocator` selects the system allocator.

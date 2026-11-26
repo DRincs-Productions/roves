@@ -575,7 +575,7 @@ ask rather than silently leaving `main` ahead of the last cut tag indefinitely.*
 ## Cutting a versioned release (`v<major>.<minor>.<patch>` tags)
 
 `.github/workflows/release.yml` publishes the CEF player release. On a `v*.*.*` tag it calls
-the three player workflows (`cef-netrender-probe.yml` Windows with `release: true`,
+the three player workflows (`cef-windows-player.yml` Windows with `release: true`,
 `cef-macos-gate.yml`, `cef-linux-gate.yml`), which build and verify the standard, Steam and
 MCP packages end to end; its `publish` job zips them, checks every zip and creates the
 GitHub Release with ten assets: `roves_shell_{windows,macos,linux}.zip`, the same three with
@@ -628,5 +628,5 @@ when the host API or the page markers change. If a consumer checkout is missing,
 Raw step logs need repo-admin auth, but `::notice::`/`::error::` annotations are readable
 anonymously via `GET /repos/DRincs-Productions/roves/check-runs/{job_id}/annotations`; the
 player steps re-emit their key log lines as annotations. With the read-only PAT, the logs
-artifacts (`cef-*-logs`, `cef-netrender-probe-evidence`) can be downloaded through the
+artifacts (`cef-*-logs`, `cef-windows-player-evidence`) can be downloaded through the
 artifacts API.

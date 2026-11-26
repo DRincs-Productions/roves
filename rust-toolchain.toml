@@ -1,6 +1,6 @@
 [toolchain]
-# Default toolchain for the standalone probe workspaces under support/ (cef-window-probe,
-# sdl3-gamepad-probe). cef-netrender-probe (the Windows player) needs a newer
+# Default toolchain for the standalone probe workspace under support/ (sdl3-gamepad-probe).
+# cef-windows-player (the Windows player) needs a newer
 # compiler and overrides this file with RUSTUP_TOOLCHAIN in its workflow.
 channel = "1.95.0"
 

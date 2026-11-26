@@ -1,6 +1,6 @@
 //! Packaged-game mode (README "Packaged game"): an unmodified static game build inside
 //! `Contents/Resources/game` is served by the shared loopback server
-//! (`support/cef-window-probe/src/server.rs`) and opened in the same sandboxed accelerated
+//! (`support/cef-windows-player/src/server.rs`) and opened in the same sandboxed accelerated
 //! OSR -> welding -> wgpu Metal -> SDL3 path as the fixture gate. Checked here:
 //!
 //! - the main frame's load-end on the loopback origin with an accepted status (Chromium's

@@ -23,11 +23,11 @@
 /// origin-port parsing), compiled unchanged; std only. Most of it (Windows keyboard
 /// translation, test sequences) is unused here.
 #[cfg(target_os = "macos")]
-#[path = "../../cef-netrender-probe/src/external_link.rs"]
+#[path = "../../cef-windows-player/src/external_link.rs"]
 mod external_link;
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
-#[path = "../../cef-netrender-probe/src/game_rules.rs"]
+#[path = "../../cef-windows-player/src/game_rules.rs"]
 mod game_rules;
 /// The players' shared host API (`/__roves/<module>/<cmd>` on the loopback origin; Windows
 /// player README "Host API"): `core`, `saves` and `steam` ("unavailable" without the `steam`
@@ -35,15 +35,15 @@ mod game_rules;
 /// `window.__ROVES__` page marker is registered before the game document (`session.rs`), so
 /// `isAvailable()` of roves-api is `true` in the packaged game.
 #[cfg(target_os = "macos")]
-#[path = "../../cef-window-probe/src/host_api.rs"]
+#[path = "../../cef-windows-player/src/host_api.rs"]
 mod host_api;
 /// The Windows player's project-icon header rules (std only).
 #[cfg(target_os = "macos")]
-#[path = "../../cef-netrender-probe/src/icon_rules.rs"]
+#[path = "../../cef-windows-player/src/icon_rules.rs"]
 mod icon_rules;
 /// The players' shared SDL3 -> welding page input (key codes: `keys.rs`).
 #[cfg(target_os = "macos")]
-#[path = "../../cef-netrender-probe/src/input.rs"]
+#[path = "../../cef-windows-player/src/input.rs"]
 mod input;
 /// Pure key-code rules of the macOS and Linux players (Chromium's table via `keycode`).
 #[cfg(target_os = "macos")]
@@ -53,17 +53,17 @@ mod keys;
 /// The players' optional local MCP bridge (Windows player README "Local MCP bridge"; on
 /// macOS a unix-domain socket in the private session directory), driven by `session.rs`.
 #[cfg(target_os = "macos")]
-#[path = "../../cef-netrender-probe/src/mcp.rs"]
+#[path = "../../cef-windows-player/src/mcp.rs"]
 mod mcp;
 /// The MCP bridge's pure helpers (limits, session directory, token check) and the page
 /// marker script with its bootstrap URL; the Windows pipe name is unused here.
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
-#[path = "../../cef-netrender-probe/src/mcp_rules.rs"]
+#[path = "../../cef-windows-player/src/mcp_rules.rs"]
 mod mcp_rules;
 /// The Windows player's page-marker registration over welding's DevTools channel.
 #[cfg(target_os = "macos")]
-#[path = "../../cef-netrender-probe/src/page_init.rs"]
+#[path = "../../cef-windows-player/src/page_init.rs"]
 mod page_init;
 #[cfg(target_os = "macos")]
 mod player;
@@ -74,9 +74,9 @@ mod player_steam;
 #[cfg(target_os = "macos")]
 mod profile;
 /// The stage-1 window probe's loopback server (axum + tower-http `ServeDir` on 127.0.0.1),
-/// compiled unchanged as in the Windows player (`support/cef-netrender-probe/src/game.rs`).
+/// compiled unchanged as in the Windows player (`support/cef-windows-player/src/game.rs`).
 #[cfg(target_os = "macos")]
-#[path = "../../cef-window-probe/src/server.rs"]
+#[path = "../../cef-windows-player/src/server.rs"]
 mod server;
 #[cfg(target_os = "macos")]
 mod session;
@@ -84,18 +84,18 @@ mod session;
 /// build.rs); its window-icon surface and failure-screen variants are unused here.
 #[cfg(target_os = "macos")]
 #[allow(dead_code)]
-#[path = "../../cef-netrender-probe/src/splash.rs"]
+#[path = "../../cef-windows-player/src/splash.rs"]
 mod splash;
 /// Startup screen until the first game frame (README "Startup screen").
 #[cfg(target_os = "macos")]
 mod startup_screen;
 /// `steam` feature: the Windows player's Steamworks client (README "Steam").
 #[cfg(all(target_os = "macos", feature = "steam"))]
-#[path = "../../cef-netrender-probe/src/steam.rs"]
+#[path = "../../cef-windows-player/src/steam.rs"]
 mod steam;
 /// The players' shared window icon (Roves logo, project `icon.png`).
 #[cfg(target_os = "macos")]
-#[path = "../../cef-netrender-probe/src/window_icon.rs"]
+#[path = "../../cef-windows-player/src/window_icon.rs"]
 mod window_icon;
 
 #[cfg(target_os = "macos")]

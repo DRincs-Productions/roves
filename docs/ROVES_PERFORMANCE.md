@@ -41,4 +41,4 @@ sullo stesso hardware e sugli stessi file. La priorità è la fluidità percepit
   Accettare miglioramenti ripetibili che preservino input, audio, resa e salvataggi.
 
 Le istruzioni per avviare la build CEF e raccogliere le misure sono nel
-[README del player](../support/cef-netrender-probe/README.md#presentmon-comparison-with-chrome).
+[README del player](../support/cef-windows-player/README.md#presentmon-comparison-with-chrome).

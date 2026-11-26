@@ -5,7 +5,7 @@ name: 'Test: SDL3 gamepad'
 # used to live here, v8.yml, release.yml, android.yml, ios.yml, perf-ab.yml and the Blitz/Deno
 # probes) were removed from this branch on 2026-11-23, together with the SDL3 windowing
 # contract check that parsed ports/servoshell sources. The branch deliverable is the
-# standalone CEF package built by cef-netrender-probe.yml. Other branches keep their own copy
+# standalone CEF package built by cef-windows-player.yml. Other branches keep their own copy
 # of these workflows unchanged.
 #
 # What stays: the standalone SDL3 virtual-gamepad probe (its own Cargo workspace, no engine

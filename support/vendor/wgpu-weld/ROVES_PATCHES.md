@@ -15,7 +15,7 @@ the revision below (or from git history).
 - `Cargo.toml` here is upstream's workspace root reduced to `members = ["welding"]`; the
   `[workspace.package]`, `[workspace.dependencies]` and `[workspace.lints]` values are verbatim,
   so `welding/Cargo.toml` keeps its `workspace = true` inheritance unchanged.
-- Consumers: `support/cef-netrender-probe` (Windows), `support/cef-macos-gate`,
+- Consumers: `support/cef-windows-player` (Windows), `support/cef-macos-gate`,
   `support/cef-linux-gate`, each with
   `welding = { path = "../vendor/wgpu-weld/welding", default-features = false, features =
   ["wgpu-29", "cef-runtime", "cpu-paint-fallback"] }`. Their `Cargo.lock` files changed only
@@ -80,7 +80,7 @@ follows; uploading only the damaged region mirrors that.
 Regression tests: `welding/src/cpu_paint.rs` unit tests (dirty-rect clamping, row-only copies,
 accumulation until taken, resize resets, null buffer ignored), run with
 `cargo test --no-default-features --features wgpu-29,cpu-paint-fallback --lib` (60 pass) and
-without the feature (59 pass). End to end: `cef-netrender-probe.yml` (WARP fixture with 16
+without the feature (59 pass). End to end: `cef-windows-player.yml` (WARP fixture with 16
 pixel checks, template package startup release, host API launches) and `cef-linux-gate.yml`
 (lavapipe fixture colour readback and packaged game, `evidence=software`).
 
@@ -114,7 +114,7 @@ non-blocking, no calls back into the producer). It is asked for every main-frame
 CEF reports to `OnBeforeBrowse`, including the initial URL, host `navigate_to_url` calls,
 reloads and server redirects, so a host policy must allow its own bootstrap and start URLs.
 Roves' policy and what it does with the events live in the players
-(`support/cef-netrender-probe/src/external_link.rs`).
+(`support/cef-windows-player/src/external_link.rs`).
 
 References: CEF 154 `cef_request_handler_t::on_before_browse` ("Called on the UI thread
 before browser navigation. Return true (1) to cancel the navigation or false (0) to allow the

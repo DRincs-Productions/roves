@@ -1,6 +1,6 @@
 //! Packaged game, persistent per-install profile (README "Saves and the player profile"):
 //! the macOS counterpart of the Windows player's `PlayerProfile`
-//! (`support/cef-netrender-probe/src/app.rs`). The rules (file names, profile name, port
+//! (`support/cef-windows-player/src/app.rs`). The rules (file names, profile name, port
 //! parsing) are the Windows player's own `game_rules.rs`, compiled here through `#[path]`;
 //! only the platform glue lives in this file.
 //!

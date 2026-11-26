@@ -22,12 +22,10 @@ WebRender resta il renderer completo. I risultati prestazionali sono in
   resta da misurare sul medesimo carico, senza cambiare contemporaneamente renderer o GC.
 - CEF e le WebView di sistema non sono backend desktop candidati. Le piattaforme desktop
   devono distribuire un runtime controllato e offrire lo stesso contratto web.
-  Eccezione sperimentale: `support/cef-window-probe` valuta CEF (crate ufficiale `cef`
-  156.7.0) in una probe Windows isolata; non cambia questa decisione per la produzione.
-  `support/cef-netrender-probe` valuta, sempre in isolamento, l'OSR accelerato di CEF 154
+  Superata dal player CEF: `support/cef-windows-player` usa l'OSR accelerato di CEF 154
   importato su wgpu tramite `welding` (merely-made/wgpu-weld, MPL-2.0, con `grafting`) e
   presentato con wgpu (la composizione Netrender del prototipo è stata rimossa): librerie scelte per non scrivere a mano l'import D3D11/D3D12 né il
-  bootstrap sandbox di CEF. Esito e limiti nel README della probe.
+  bootstrap sandbox di CEF. Dettagli e limiti nel README del player.
 
 ## Candidati ancora aperti
 

@@ -12,7 +12,7 @@ Nothing here claims that the Linux path shows CEF frames, and no CI result from 
 runner can claim it works on a GPU (see "GPU evidence versus CI").
 
 Linux twin of `support/cef-macos-gate`, for the CEF + SDL3 + wgpu player
-(`support/cef-netrender-probe`, Windows only). Same question with the same maintained
+(`support/cef-windows-player`, Windows only). Same question with the same maintained
 producer and renderer: does CEF's **accelerated off-screen** frame reach a wgpu device that
 also presents to an **SDL3** window on Linux, with **Chromium's sandbox on**? There is no
 CEF windowed mode. When no frame can be imported, the browser uses CEF's software output
@@ -205,12 +205,12 @@ so libcef must resolve through the gate's own run path (CI checks `readelf`/`ldd
 When `game/index.html` exists next to the executable, the gate runs an unmodified static game
 build instead of the fixture (`src/player.rs`), the Linux counterpart of the macOS player:
 
-- `game/` is served by the shared loopback server (`support/cef-window-probe/src/server.rs`,
+- `game/` is served by the shared loopback server (`support/cef-windows-player/src/server.rs`,
   compiled through `#[path]` as on Windows and macOS: axum + tower-http `ServeDir` on
   `127.0.0.1`, `Cache-Control: no-cache`, per-instance ETags) and opened at `<origin>/` in the
   same sandboxed accelerated OSR path, X11 only, window 1280x720.
 - The origin, load-status and profile-name rules are the Windows player's
-  `support/cef-netrender-probe/src/game_rules.rs`; the profile lock and stored-port glue is
+  `support/cef-windows-player/src/game_rules.rs`; the profile lock and stored-port glue is
   the macOS gate's `src/profile.rs`; both compiled unchanged through `#[path]`.
 - Checked: load-end on the loopback origin with status 2xx/304, no main frame off the origin
   (welding's main-frame veto cancels off-origin navigations before they start; a commit off
@@ -238,7 +238,7 @@ build instead of the fixture (`src/player.rs`), the Linux counterpart of the mac
 The macOS gate's `src/startup_screen.rs` compiled through `#[path]` (README of that gate,
 section "Startup screen", for content and rules): packaged-game mode only, the Windows
 player's dark background, Roves logo, MetalMania wordmark (rasterized by this gate's
-`build.rs` with the shared `support/cef-netrender-probe/build_wordmark.rs`; sparse checkouts
+`build.rs` with the shared `support/cef-windows-player/build_wordmark.rs`; sparse checkouts
 need `resources/fonts`) and indeterminate loading bar, from the first present until the
 first game frame. The page-marker bootstrap document's frames stay behind it. Released by
 the first game frame after the accepted load-end, or by the "settled" frame for static
@@ -290,9 +290,9 @@ Windows rule) makes two install paths that differ only in case share a profile.
 ## Local MCP bridge
 
 Development only, off by default: the Windows player's local MCP bridge
-(`support/cef-netrender-probe/src/mcp.rs` and `mcp_rules.rs` through `#[path]`; Windows
+(`support/cef-windows-player/src/mcp.rs` and `mcp_rules.rs` through `#[path]`; Windows
 player README "Local MCP bridge"; client instructions in
-`support/cef-netrender-probe/mcp/README.md`). A packaged-game launch starts it with
+`support/cef-windows-player/mcp/README.md`). A packaged-game launch starts it with
 `--roves-mcp`, or when the package contains `mcp/enabled` next to the executable (only the
 MCP-enabled development package has it); `--roves-mcp` without a packaged game is a usage
 error. Off means no socket, no session record and no `gate: mcp` line.
@@ -327,7 +327,7 @@ error. Off means no socket, no session record and no `gate: mcp` line.
 
 CI (`.github/workflows/cef-linux-gate.yml`, after the Steam variant): the stand-alone
 `mcp_rules` tests (including the unix directory 0700/owner and record 0600 test), then
-`smoke.mjs` (`support/cef-netrender-probe/mcp/smoke.mjs`) three times. **fixture**: the MCP
+`smoke.mjs` (`support/cef-windows-player/mcp/smoke.mjs`) three times. **fixture**: the MCP
 fixture temporarily as the MCP package's game, launched with `--roves-mcp`: record and
 socket in the 0700 directory (both 0600), unauthenticated connections answered with nothing,
 discovery by PID, state, the `isMcpEnabled()` marker (entry script, top level only),
@@ -454,10 +454,10 @@ bundled into its own directory with the template, `chrome-sandbox` made root 475
 and `libcef.so` from the package directory with nothing missing, and `chrome-sandbox` not
 depending on it. Then one launch under **emulation**, the Windows player's design: the
 pinned Goldberg/GSE Linux release (gbe_fork `release-2026_09_27`,
-`emu-linux-release.tar.bz2`, SHA-256 checked, the digest of `steamworks-gate.yml`) replaces
+`emu-linux-release.tar.bz2`, SHA-256 checked) replaces
 `libsteam_api.so` offline (`steam_interfaces.txt` generated from the redistributable,
 `steam_settings` with App ID 480, one achievement and one stat), the game is
-`support/cef-netrender-probe/host-api-fixture` with a fresh persistent profile; the package is
+`support/cef-windows-player/host-api-fixture` with a fresh persistent profile; the package is
 restored afterwards. Required: exit 0; in order `steam initialized app_id=480`, origin,
 persistent profile, sandboxed CEF, accepted load-end, `startup screen released`, `close
 requested by the game command=exit`, browser closed, `steam shutdown complete`, `cef shutdown

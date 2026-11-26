@@ -36,7 +36,7 @@ permissions:
 
 jobs:
   windows:
-    uses: ./.github/workflows/cef-netrender-probe.yml
+    uses: ./.github/workflows/cef-windows-player.yml
     with:
       release: true
   macos:

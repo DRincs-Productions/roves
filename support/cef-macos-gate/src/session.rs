@@ -10,7 +10,7 @@
 //!   visibility and cursor shape through `input.rs`, with this platform's key codes
 //!   (`keys.rs`);
 //! - the optional local MCP bridge (Windows player README "Local MCP bridge",
-//!   `support/cef-netrender-probe/mcp/README.md`): the Windows player's `mcp.rs`, started
+//!   `support/cef-windows-player/mcp/README.md`): the Windows player's `mcp.rs`, started
 //!   here before the browser when `--roves-mcp` or the package marker asked for it. Its
 //!   requests run in this loop: `state` from this session, `evaluate` over the same DevTools
 //!   channel as the page markers (which then also define `window.__ROVES_MCP__`), and

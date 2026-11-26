@@ -1,23 +1,23 @@
 //! See Cargo.toml: the players' loopback server and host API under plain `cargo test`, plus
 //! the macOS/Linux key-code rules (`cef-macos-gate/src/key_rules.rs`) and the Windows
-//! player's pure rules they build on (`cef-netrender-probe/src/game_rules.rs`) and the players'
+//! player's pure rules they build on (`cef-windows-player/src/game_rules.rs`) and the players'
 //! single-document navigation and external-link rules (`external_link.rs`), and the MCP
 //! bridge's pure rules (`mcp_rules.rs`).
 
 #[allow(dead_code)]
-#[path = "../../cef-window-probe/src/server.rs"]
+#[path = "../../cef-windows-player/src/server.rs"]
 mod server;
 
 #[allow(dead_code)]
-#[path = "../../cef-window-probe/src/host_api.rs"]
+#[path = "../../cef-windows-player/src/host_api.rs"]
 mod host_api;
 
 #[allow(dead_code)]
-#[path = "../../cef-netrender-probe/src/game_rules.rs"]
+#[path = "../../cef-windows-player/src/game_rules.rs"]
 mod game_rules;
 
 #[allow(dead_code)]
-#[path = "../../cef-netrender-probe/src/external_link.rs"]
+#[path = "../../cef-windows-player/src/external_link.rs"]
 mod external_link;
 
 #[allow(dead_code)]
@@ -28,7 +28,7 @@ mod key_rules;
 /// check, per-OS session directory, private record writes and, on unix, the 0700 session
 /// directory owner check. Its own tests run here on the host OS.
 #[allow(dead_code)]
-#[path = "../../cef-netrender-probe/src/mcp_rules.rs"]
+#[path = "../../cef-windows-player/src/mcp_rules.rs"]
 mod mcp_rules;
 
 #[cfg(test)]
@@ -66,7 +66,7 @@ mod end_to_end {
     fn saves_survive_a_restart_and_foreign_hosts_are_refused() {
         let fixture = PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../cef-window-probe/fixtures/static-compat"
+            "/../cef-windows-player/fixtures/static-compat"
         ));
         let profile =
             std::env::temp_dir().join(format!("roves-host-api-e2e-{}", std::process::id()));

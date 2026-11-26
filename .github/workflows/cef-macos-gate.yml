@@ -20,7 +20,7 @@ name: 'Test: macOS player'
 # play like the standard one. A third .app, the MCP-enabled development package (the standard
 # .app plus Contents/Resources/mcp and its `enabled` marker, Windows player README "Local MCP
 # bridge"), is smoked through its unix-socket bridge (fixture interaction, packaged launch,
-# bridge off/unavailable in the standard .app). Separate from cef-netrender-probe.yml
+# bridge off/unavailable in the standard .app). Separate from cef-windows-player.yml
 # (Windows, unchanged). Also called by release.yml (workflow_call) on a v*.*.* tag: the same
 # build and checks, and its three zipped .app artifacts become the macOS release assets.
 
@@ -55,9 +55,8 @@ jobs:
           sparse-checkout: |
             support/cef-macos-gate
             support/vendor/wgpu-weld
-            support/cef-window-probe/src
-            support/cef-netrender-probe/src
-            support/cef-netrender-probe/mcp
+            support/cef-windows-player/src
+            support/cef-windows-player/mcp
             resources/fonts
           sparse-checkout-cone-mode: true
       - uses: dtolnay/rust-toolchain@master
@@ -194,7 +193,7 @@ jobs:
           fi
       # ── Packaged game (README "Packaged game") ──────────────────────────────────────
       # Same pinned commit and build commands as the Windows package in
-      # cef-netrender-probe.yml; dist/ is copied byte for byte into the same .app.
+      # cef-windows-player.yml; dist/ is copied byte for byte into the same .app.
       - name: checkout visual-novel-template (pinned)
         id: template
         if: (success() || failure()) && steps.bundle.outcome == 'success'
@@ -622,7 +621,7 @@ jobs:
           sleep 2
           if pgrep -fl "roves-cef-macos-gate"; then echo "::error::Steam variant processes still running after exit"; failed=1; fi
           test "$failed" = 0
-      # ── Local MCP bridge (support/cef-netrender-probe/mcp/README.md) ────────────────
+      # ── Local MCP bridge (support/cef-windows-player/mcp/README.md) ────────────────
       # The MCP-enabled development .app: a copy of the standard .app (same executable, same
       # packaged template) plus Contents/Resources/mcp (server.mjs, README, package files and
       # its `npm ci --omit=dev` node_modules) and the marker Contents/Resources/mcp/enabled,
@@ -636,7 +635,7 @@ jobs:
           # directory (0700, owner) and record (0600) tests.
           rules="$RUNNER_TEMP/mcp-rules-tests"
           mkdir -p "$rules"
-          rustc --edition 2024 --test support/cef-netrender-probe/src/mcp_rules.rs -o "$rules/mcp_rules"
+          rustc --edition 2024 --test support/cef-windows-player/src/mcp_rules.rs -o "$rules/mcp_rules"
           "$rules/mcp_rules"
           app="$RUNNER_TEMP/gate-app-mcp/roves-cef-macos-gate.app"
           test ! -e "$app" || { echo "::error::$app already exists"; exit 1; }
@@ -645,12 +644,12 @@ jobs:
           mcp="$app/Contents/Resources/mcp"
           mkdir -p "$mcp"
           for file in server.mjs package.json package-lock.json README.md; do
-            cp "support/cef-netrender-probe/mcp/$file" "$mcp/"
+            cp "support/cef-windows-player/mcp/$file" "$mcp/"
           done
           (cd "$mcp" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund)
           touch "$mcp/enabled"
           # Discovery smoke of the packaged server without a game (tool list, clean error).
-          node support/cef-netrender-probe/mcp/smoke.mjs list-only "$mcp/server.mjs"
+          node support/cef-windows-player/mcp/smoke.mjs list-only "$mcp/server.mjs"
           for required in Contents/Resources/game/index.html Contents/Resources/mcp/server.mjs \
               Contents/Resources/mcp/enabled Contents/Resources/mcp/README.md \
               Contents/Resources/mcp/node_modules/@modelcontextprotocol/server/package.json; do
@@ -662,7 +661,7 @@ jobs:
           echo "::notice::MCP .app: $(cd "$mcp" && npm ls --omit=dev --depth=0 2>/dev/null | tail -n +2 | tr -d '\n')"
           echo "MCP_APP=$app" >> "$GITHUB_ENV"
       # Real interaction through the unix-socket bridge: the MCP fixture
-      # (support/cef-netrender-probe/mcp/fixture) temporarily as the MCP .app's game, launched
+      # (support/cef-windows-player/mcp/fixture) temporarily as the MCP .app's game, launched
       # with --roves-mcp. Required (smoke.mjs fixture): session record and socket in the 0700
       # per-user directory (~/Library/Application Support/Roves/mcp, both 0600), two
       # unauthenticated connections answered with nothing, discovery by PID, state, the
@@ -681,11 +680,11 @@ jobs:
           mv "$game" "$out/template-game"
           restore() { rm -rf "$game"; mv "$out/template-game" "$game"; }
           trap restore EXIT
-          ditto support/cef-netrender-probe/mcp/fixture "$game"
+          ditto support/cef-windows-player/mcp/fixture "$game"
           set +e
-          perl -e 'alarm shift; exec @ARGV' 420 node support/cef-netrender-probe/mcp/smoke.mjs fixture \
+          perl -e 'alarm shift; exec @ARGV' 420 node support/cef-windows-player/mcp/smoke.mjs fixture \
             "$MCP_APP/Contents/Resources/mcp/server.mjs" "$MCP_APP/Contents/MacOS/roves-cef-macos-gate" \
-            support/cef-netrender-probe/mcp/fixture "$out"
+            support/cef-windows-player/mcp/fixture "$out"
           code=$?
           set -e
           grep -E '^gate: (mcp (enabled|unavailable|session)|page markers|load-end|NO_|PASS|FAIL|exit code=)' "$out/game.log" \
@@ -710,11 +709,11 @@ jobs:
           mv "$game" "$out/template-game"
           restore() { rm -rf "$game"; mv "$out/template-game" "$game"; }
           trap restore EXIT
-          ditto support/cef-netrender-probe/mcp/fixture "$game"
+          ditto support/cef-windows-player/mcp/fixture "$game"
           set +e
-          perl -e 'alarm shift; exec @ARGV' 420 node support/cef-netrender-probe/mcp/smoke.mjs disabled \
+          perl -e 'alarm shift; exec @ARGV' 420 node support/cef-windows-player/mcp/smoke.mjs disabled \
             "$MCP_APP/Contents/Resources/mcp/server.mjs" "$APP/Contents/MacOS/roves-cef-macos-gate" \
-            support/cef-netrender-probe/mcp/fixture "$out"
+            support/cef-windows-player/mcp/fixture "$out"
           code=$?
           set -e
           for case in off unavailable; do
@@ -736,7 +735,7 @@ jobs:
           out="$RUNNER_TEMP/mcp-package-run"
           test ! -e "$out" || { echo "::error::$out already exists"; exit 1; }
           set +e
-          perl -e 'alarm shift; exec @ARGV' 300 node support/cef-netrender-probe/mcp/smoke.mjs package \
+          perl -e 'alarm shift; exec @ARGV' 300 node support/cef-windows-player/mcp/smoke.mjs package \
             "$MCP_APP/Contents/Resources/mcp/server.mjs" "$MCP_APP" "$out"
           code=$?
           set -e

@@ -1,5 +1,5 @@
 //! macOS and Linux key codes of the players' shared input path
-//! (`support/cef-netrender-probe/src/input.rs`); the Linux gate compiles this file through
+//! (`support/cef-windows-player/src/input.rs`); the Linux gate compiles this file through
 //! `#[path]`. The rules are in `key_rules.rs` (README "Input").
 
 use crate::input::{KeyFields, KeyTranslation};

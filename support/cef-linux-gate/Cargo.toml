@@ -1,7 +1,7 @@
 # Linux feasibility gate for the CEF accelerated off-screen path: CEF 154 OnAcceleratedPaint
 # native pixmap (DMA-BUF planes) -> welding (Vulkan external-memory import through grafting)
 # -> wgpu 29 Vulkan -> SDL3 X11 window.
-# Separate Cargo workspace: not part of the Windows player (support/cef-netrender-probe), of
+# Separate Cargo workspace: not part of the Windows player (support/cef-windows-player), of
 # the macOS gate (support/cef-macos-gate), of their CI, or of any shipped target. See README.md.
 #
 # Pins are the Windows player's and the macOS gate's, unchanged, so a pass here says something
@@ -55,13 +55,13 @@ pollster = "0.4"
 dpi = "0.1"
 log = "0.4"
 # Packaged-game mode only (src/player.rs): the stage-1 window probe's loopback server
-# (support/cef-window-probe/src/server.rs, compiled through `#[path]` exactly as the Windows
+# (support/cef-windows-player/src/server.rs, compiled through `#[path]` exactly as the Windows
 # player and the macOS gate do) with their versions: axum + tower-http ServeDir (MIT) own path
 # normalisation, MIME types and Range requests on 127.0.0.1; tokio runs it on its own thread.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 tower-http = { version = "0.7.1", default-features = false, features = ["fs"] }
 tokio = { version = "1.47", default-features = false, features = ["rt", "net", "sync", "io-util", "time"] }
-# Optional local MCP bridge (support/cef-netrender-probe/src/mcp.rs, `#[path]`, off by default):
+# Optional local MCP bridge (support/cef-windows-player/src/mcp.rs, `#[path]`, off by default):
 # tokio's `io-util`/`time` (line reads, timeouts; the Windows player's features, already in
 # the graph), the session token from the OS RNG (getrandom 0.2.17, MIT/Apache-2.0) and the
 # effective uid for the socket peer check and the session directory owner (libc 0.2.191,
@@ -69,7 +69,7 @@ tokio = { version = "1.47", default-features = false, features = ["rt", "net", "
 getrandom = "0.2"
 libc = "0.2"
 tower = { version = "0.5", default-features = false, features = ["util"] }
-# Host API (support/cef-window-probe/src/host_api.rs, `#[path]` as in the Windows player):
+# Host API (support/cef-windows-player/src/host_api.rs, `#[path]` as in the Windows player):
 # JSON replies, base64 save payloads, query strings (already in Cargo.lock) and atomic save
 # writes (tempfile, as in the Windows player).
 serde_json = "1"
@@ -91,7 +91,7 @@ open = "5.4.5"
 steamworks = { version = "=0.13.1", optional = true }
 
 [build-dependencies]
-# build.rs only (support/cef-netrender-probe/build_wordmark.rs, `#[path]`): rasterizes the
+# build.rs only (support/cef-windows-player/build_wordmark.rs, `#[path]`): rasterizes the
 # startup wordmark with the official MetalMania font (resources/fonts, SIL OFL 1.1) into an
 # embedded alpha bitmap, as in the Windows player. Nothing of it is linked into the player.
 ab_glyph = "0.2.32"

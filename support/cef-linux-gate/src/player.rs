@@ -1,6 +1,6 @@
 //! Packaged-game mode (README "Packaged game"): an unmodified static game build in `game/`
 //! next to the executable is served by the shared loopback server
-//! (`support/cef-window-probe/src/server.rs`) and opened in the same sandboxed accelerated
+//! (`support/cef-windows-player/src/server.rs`) and opened in the same sandboxed accelerated
 //! OSR -> welding -> wgpu Vulkan -> SDL3 X11 path as the fixture gate. The Linux counterpart
 //! of the macOS gate's `player.rs`; checked here:
 //!
