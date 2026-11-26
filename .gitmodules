@@ -13,3 +13,6 @@
 [submodule "roves-packmaster"]
 	path = roves-packmaster
 	url = https://github.com/DRincs-Productions/roves-packmaster
+[submodule "roves-cli"]
+	path = roves-cli
+	url = https://github.com/DRincs-Productions/roves-cli
