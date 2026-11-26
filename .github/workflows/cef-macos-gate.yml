@@ -41,7 +41,9 @@ permissions:
 
 jobs:
   macos-arm64:
-    runs-on: macos-15
+    # macos-26 arm64: on 2026-11-26 every macos-15 arm64 job of the v0.9.0 release was cancelled
+    # unacquired (capacity) for hours, while macos-26 (macos-latest) jobs started at once.
+    runs-on: macos-26
     timeout-minutes: 75
     env:
       # The repository root rust-toolchain.toml pins the engine toolchain; welding needs

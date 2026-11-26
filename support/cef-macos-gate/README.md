@@ -405,7 +405,7 @@ content arrived, not ordering or tearing.
 
 ## CI (`cef-macos-gate.yml`)
 
-`macos-15` (Apple silicon), push on this directory or the workflow, or manual. Steps: rustc
+`macos-26` (Apple silicon; `macos-15` until 2026-11-26), push on this directory or the workflow, or manual. Steps: rustc
 1.99.1 check and Ninja (`cef-dll-sys` uses CMake's Ninja generator); cargo/CEF cache;
 dependency graph check; `cargo build --locked --release --bins`; `target/release/bundle`
 and a structure check (main executable, framework, `libcef_sandbox.dylib`, five helpers);

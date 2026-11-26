@@ -1,3 +1,10 @@
+## 2026-11-26 - macOS player gate on macos-26
+
+Changed: `.github/workflows/cef-macos-gate.yml`, `support/cef-macos-gate/README.md`.
+Why: every `macos-15` arm64 job of the v0.9.0 release was cancelled unacquired (capacity)
+for hours, while `macos-26` arm64 (now `macos-latest`) jobs started at once. The gate's
+checks are unchanged; the macOS player is built and verified on macOS 26.
+
 ## 2026-11-26 - Agent skills: core CLI skill and diagnostics skill
 
 Changed: `skills/core/SKILL.md` (new, skill `roves`), `skills/roves` moved to
