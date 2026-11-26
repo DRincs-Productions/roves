@@ -1,3 +1,13 @@
+## 2026-11-26 - Agent skills: core CLI skill and diagnostics skill
+
+Changed: `skills/core/SKILL.md` (new, skill `roves`), `skills/roves` moved to
+`skills/diagnostics` (skill renamed `roves-diagnostics`), `categories.json` (new),
+`.github/workflows/validate-skills.yml`, `README.md`, `roves-cli` submodule.
+Why: user decision. The `roves` skill documents Roves and every command of the new
+`@drincs/roves-cli` package and lives here, not in roves-cli; the MCP diagnostics skill keeps
+its content under its own category. The validation installs both skills and checks that
+`categories.json` maps every skill name to its folder.
+
 ## 2026-11-26 - Release assets are the player shell only; workflow names
 
 Changed: `.github/workflows/release.yml`, `.github/release/shell_only_windows.py` (new), the

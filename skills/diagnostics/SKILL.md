@@ -1,5 +1,5 @@
 ---
-name: roves
+name: roves-diagnostics
 description: Inspect and control a local Roves game through its diagnostic MCP server, including DOM checks, PixiJS scene inspection, and live frame timing analysis.
 ---
 

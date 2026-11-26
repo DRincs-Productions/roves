@@ -2,9 +2,9 @@ name: Validate Agent Skills
 
 on:
   push:
-    paths: ["skills/**", ".github/workflows/validate-skills.yml"]
+    paths: ["skills/**", "categories.json", ".github/workflows/validate-skills.yml"]
   pull_request:
-    paths: ["skills/**", ".github/workflows/validate-skills.yml"]
+    paths: ["skills/**", "categories.json", ".github/workflows/validate-skills.yml"]
   workflow_dispatch:
 
 permissions:
@@ -21,7 +21,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
-      - name: Discover and install the checked-out Roves skill
+      - name: Discover and install the checked-out Roves skills
         working-directory: ${{ runner.temp }}
         env:
           SKILL_AGENT: ${{ matrix.agent }}
@@ -31,10 +31,27 @@ jobs:
           trap 'rm -rf "$temp_profile"' EXIT
           mkdir -p "$temp_profile/project"
           cd "$temp_profile/project"
-          npx --yes skills@1.9.0 add "$GITHUB_WORKSPACE" --skill roves --agent "$SKILL_AGENT" --list -y
-          npx --yes skills@1.9.0 add "$GITHUB_WORKSPACE" --skill roves --agent "$SKILL_AGENT" --copy -y
-          installed="$(find . -type f -path '*/roves/SKILL.md' -print -quit)"
-          test -n "$installed"
-          cmp "$installed" "$GITHUB_WORKSPACE/skills/roves/SKILL.md"
+          # skills/<category>/SKILL.md; categories.json maps every skill name to its folder.
+          python3 -I - "$GITHUB_WORKSPACE" <<'EOF'
+          import json, pathlib, re, sys
+          root = pathlib.Path(sys.argv[1])
+          categories = json.loads((root / 'categories.json').read_text(encoding='utf-8'))
+          found = {}
+          for skill in sorted((root / 'skills').glob('*/SKILL.md')):
+              name = re.search(r'^name:\s*(\S+)', skill.read_text(encoding='utf-8'), re.M).group(1)
+              found[name] = skill.parent.name
+          if found != categories:
+              sys.exit(f'categories.json {categories} does not match skills/ {found}')
+          print('skills:', found)
+          EOF
+          npx --yes skills@1.9.0 add "$GITHUB_WORKSPACE" --skill '*' --agent "$SKILL_AGENT" --list -y
+          npx --yes skills@1.9.0 add "$GITHUB_WORKSPACE" --skill '*' --agent "$SKILL_AGENT" --copy -y
+          for pair in roves:core roves-diagnostics:diagnostics; do
+            name="${pair%%:*}" folder="${pair#*:}"
+            installed="$(find . -type f -path "*/$name/SKILL.md" -print -quit)"
+            test -n "$installed" || { echo "::error::skill $name was not installed"; exit 1; }
+            cmp "$installed" "$GITHUB_WORKSPACE/skills/$folder/SKILL.md"
+          done
+          installed="$(find . -type f -path '*/roves-diagnostics/SKILL.md' -print -quit)"
           test -f "$(dirname "$installed")/references/mcp.md"
           test -f "$(dirname "$installed")/references/performance.md"

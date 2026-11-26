@@ -212,6 +212,14 @@ possible opportunities to delegate more work to external libraries.
 
 [CUSTOMIZATIONS.md]: ./CUSTOMIZATIONS.md
 
+## Agent skills
+
+This repository ships two agent skills, installable with `npx skills add DRincs-Productions/roves`:
+`roves` ([`skills/core`](skills/core/SKILL.md)) explains Roves and every command of the
+[`roves` CLI](https://github.com/DRincs-Productions/roves-cli) (`npm i -g @drincs/roves-cli`),
+and `roves-diagnostics` ([`skills/diagnostics`](skills/diagnostics/SKILL.md)) inspects a running
+game through its development MCP bridge. `categories.json` maps each skill to its folder.
+
 ## Naming: "Roves" vs. "Servo" vs. `servoshell`
 
 Every label a player or the OS actually sees — the window title, the taskbar/dock app
