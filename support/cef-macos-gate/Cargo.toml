@@ -64,6 +64,20 @@ log = "0.4"
 # normalisation, MIME types and Range requests on 127.0.0.1; tokio runs it on its own thread.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 tower-http = { version = "0.7.1", default-features = false, features = ["fs"] }
+# Packed game content (support/cef-windows-player/src/content.rs, through server.rs; README
+# "Packed game content"): the ZIP central directory only (zip 9.8, MIT, no compression
+# features; data is read straight from the mapping), memory-mapped archives (memmap2,
+# MIT/Apache-2.0), the bounded cache of inflated assets (quick_cache, MIT, without
+# parking_lot). Already in the graph: flate2 + zlib-rs (raw deflate), crc32fast, bytes,
+# http-range-header and mime_guess (the same Range parser and MIME table as ServeDir).
+zip = { version = "9.8.2", default-features = false }
+memmap2 = "0.9.12"
+quick_cache = { version = "0.7.0", default-features = false }
+flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
+crc32fast = "1.5"
+bytes = "1.12"
+http-range-header = "0.4.2"
+mime_guess = "2.0.5"
 tokio = { version = "1.47", default-features = false, features = ["rt", "net", "sync", "io-util", "time"] }
 # Optional local MCP bridge (support/cef-windows-player/src/mcp.rs, `#[path]`, off by default):
 # tokio's `io-util`/`time` (line reads, timeouts; the Windows player's features, already in

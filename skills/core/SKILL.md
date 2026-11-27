@@ -56,7 +56,10 @@ Unix modes, the setuid `chrome-sandbox` and macOS framework symlinks survive.
 
 | Option                      | Meaning                                                                                                                                                                                     |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-c, --content-dir <dir>`   | Built web game, `index.html` at its root. Required. Copied unchanged into the player's `game/` folder.                                                                                      |
+| `-c, --content-dir <dir>`   | Built web game, `index.html` at its root. Required. Packed into the player's `game/` folder (see `--content-layout`).                                                                       |
+| `--content-layout <layout>` | `archive` (default with player v0.9.1+): `game/` holds `roves-content.json`, `code.pack` (all JS/CSS/HTML/JSON/WASM) and `data-<folder>[-N].pack` (assets by top-level folder). `files`: loose copy. With an older `--shell-version` the default falls back to `files` with a warning; an explicit `archive` fails. |
+| `--compression-level <0-9>` | Archive compression: `0` (default, stored: fastest in game), `1`-`9` smaller download, slower first access. Media (images, audio, video, fonts) are always stored.                          |
+| `--max-archive-size <size>` | Largest asset archive, e.g. `300MB` (default), `1GiB`, `500000000`; bigger folders are split (`data-<folder>-2.pack`, ...). At least `1MB`.                                                |
 | `-p, --platform <platform>` | `windows`, `macos`, `linux`; repeat it or use a comma list (`-p windows,linux`). Default: the host platform.                                                                                |
 | `--icon-png <file>`         | Square PNG project icon, 16-2048 px, at most 8 MiB: window icon, macOS app icon, source of `play.exe`'s icon. Default: `<content-dir>/icon.png`.                                            |
 | `--icon-ico <file>`         | Project `.ico` for `play.exe` (Windows). Default: generated from the PNG, else `<content-dir>/icon.ico` or `favicon.ico`. On macOS/Linux only used as the window icon when there is no PNG. |
@@ -88,6 +91,7 @@ Existing outputs with the same name are replaced.
 | Linux    | `<name>/`     | the player executable                 | next to the executable        |
 
 stdout reports, per platform, `archive-path`, `bundle-dir`, `mcp-enabled` and `icon-source`
+(`--json` also gives `contentLayout`, `archive` or `files`)
 (e.g. `window project (game icon.png 512x512); executable project (ICO generated from game icon.png)`);
 progress and warnings go to stderr. Ship the **zip**: the unzipped folder is for a quick look,
 and on Windows symlinks of macOS/Linux packages may not be creatable there (a warning says so).
@@ -99,8 +103,9 @@ and on Windows symlinks of macOS/Linux packages may not be creatable there (a wa
    unlisted); macOS the `Info.plist` executable/icon, the CEF framework; Linux `libcef.so`,
    `chrome-sandbox` with its execute bit, `icudtl.dat`, `resources.pak`. The Steam library
    must be present exactly for `--steam`; `--enable-mcp` needs a complete `mcp/` folder.
-3. Adds the game as `game/`. Release assets from v0.9.0 are the player shell only; an older base
-   that still has a `game/` (and sample icon/provenance) has them dropped.
+3. Adds the game as `game/`: packed into archives once for every platform (default) or as loose
+   files. Release assets from v0.9.0 are the player shell only; an older base that still has a
+   `game/` (and sample icon/provenance) has them dropped.
 4. Applies the project icon; on Windows patches `play.exe`'s icon resource (pure JS).
 5. Drops `mcp/` unless `--enable-mcp`; writes `steam_appid.txt` with `--steam-app-id`.
 6. Windows: rewrites `PROVENANCE.txt` (a "Game replaced" note) and regenerates `SHA256SUMS.txt`.

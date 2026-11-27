@@ -136,6 +136,19 @@ jobs:
         shell: bash
         working-directory: support/cef-host-api-tests
         run: cargo test --locked 2>&1 | tee "$RUNNER_TEMP/cef-host-api-tests.log"; test "${PIPESTATUS[0]}" = 0
+      # Packed game content access speed (README "Packed game content"): ~120 MB of synthetic
+      # assets read as loose files and from the archives (stored, level 1, level 6), cold and
+      # warm. Reported, never gated on timings (shared runners vary).
+      - name: packed content access speed (benchmark, release)
+        if: success() || failure()
+        shell: bash
+        working-directory: support/cef-host-api-tests
+        run: |
+          cargo test --locked --release archive_access_speed -- --ignored --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/cef-archive-speed.log"
+          test "${PIPESTATUS[0]}" = 0
+          grep -E '^archive_access_speed:|^  (loose|level)' "$RUNNER_TEMP/cef-archive-speed.log" \
+            | sed -E 's/^ +//; s/^/::notice::archive speed /'
       - name: build and bundle (release, sandbox)
         id: bundle
         shell: bash
@@ -1522,6 +1535,86 @@ jobs:
           $console = @($lines | Select-String -Pattern '^roves-cef-win console level=').Count
           Select-String -Path $log -Pattern 'startup|title |import frame=|closing imported=|player ' | ForEach-Object { Write-Output "::notice::$($_.Line)" }
           Write-Output "::notice::packaged launch: released=$released exit=$code console_lines=$console (WARP: software paint; accelerated release on a real GPU is a manual check)"
+          Start-Sleep -Seconds 3
+          if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
+          if ($failed) { exit 1 }
+      # Packed game content (README "Packed game content"): roves-cli at this commit's submodule
+      # packs the template's dist/ with its default (stored) and at level 6; the players' reader
+      # (content.rs) reads each set back byte for byte against dist/, then the plain package
+      # with that packed game\ is launched once (isolated profile, WARP) and must serve the game
+      # from the archives, release the startup screen and exit 0 like the loose package.
+      - name: packed game content (roves-cli archives, byte check, packaged launch, WARP)
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: pwsh
+        run: |
+          git submodule update --init --depth 1 roves-cli
+          if ($LASTEXITCODE -ne 0) { Write-Output '::error::roves-cli submodule checkout failed'; exit 1 }
+          Push-Location roves-cli
+          npm ci --no-audit --no-fund; $ci = $LASTEXITCODE
+          if ($ci -eq 0) { npm run build; $ci = $LASTEXITCODE }
+          Pop-Location
+          if ($ci -ne 0) { Write-Output '::error::roves-cli build failed'; exit 1 }
+          $dist = (Resolve-Path 'visual-novel-template/dist').Path
+          $plain = '${{ steps.package.outputs.dir }}'
+          $root = Join-Path $env:RUNNER_TEMP 'cef-packed'
+          if (Test-Path -LiteralPath $root) { Write-Output "::error::$root already exists"; exit 1 }
+          $failed = $false
+          foreach ($level in 0, 6) {
+            $packed = Join-Path $root "content-level-$level"
+            New-Item -ItemType Directory -Force $packed | Out-Null
+            $summary = node --input-type=module -e "import { packContent } from './roves-cli/dist/index.mjs'; const r = await packContent(process.argv[1], process.argv[2], { compressionLevel: Number(process.argv[3]) }); console.log(r.summary);" $dist $packed $level
+            if ($LASTEXITCODE -ne 0) { Write-Output "::error::roves-cli packContent level $level failed"; $failed = $true; continue }
+            Write-Output "::notice::level $level packed by roves-cli: $summary"
+            Push-Location 'support/cef-host-api-tests'
+            $env:ROVES_LOOSE_DIR = $dist
+            $env:ROVES_PACKED_DIR = $packed
+            # Through cmd: cargo's stderr must not become pwsh error records (ErrorActionPreference stop).
+            $check = & cmd /c 'cargo test --locked reads_roves_cli_archives -- --ignored --nocapture 2>&1'
+            $checkCode = $LASTEXITCODE
+            Pop-Location
+            $check | Set-Content (Join-Path $root "byte-check-level-$level.log")
+            $identical = $check | Select-String -Pattern '^\d+ files identical$' | Select-Object -First 1
+            if ($checkCode -ne 0 -or -not $identical) {
+              $check | Select-Object -Last 30
+              Write-Output "::error::level $level: the archives differ from dist/"; $failed = $true; continue
+            }
+            Write-Output "::notice::level $level byte check: $($identical.Line)"
+
+            $pkg = Join-Path $root "package-level-$level"
+            New-Item -ItemType Directory -Force $pkg | Out-Null
+            Get-ChildItem -LiteralPath $plain -Force | Where-Object Name -ne 'game' | Copy-Item -Destination $pkg -Recurse
+            Copy-Item -Recurse -LiteralPath $packed -Destination (Join-Path $pkg 'game')
+            if (Test-Path -LiteralPath (Join-Path $pkg 'game\index.html')) { Write-Output '::error::packed game\ has a loose index.html'; $failed = $true }
+            foreach ($name in @('roves_cef_windows_player', 'play')) {
+              Get-Process $name -ErrorAction SilentlyContinue | Stop-Process -Force
+            }
+            $log = Join-Path $root "player-level-$level.log"
+            $arguments = @('--roves-isolated-profile', '--roves-no-error-dialog', '--roves-auto-close-ms=8000',
+              '--roves-timeout-ms=60000', "--roves-log=$log")
+            $proc = Start-Process -FilePath (Join-Path $pkg 'play.exe') -ArgumentList $arguments -WorkingDirectory $root -PassThru
+            $null = $proc.Handle
+            if (-not $proc.WaitForExit(150000)) {
+              Get-Process play -ErrorAction SilentlyContinue | Stop-Process -Force
+              Write-Output "::error::level $level: the packed game did not exit in time"; $failed = $true; continue
+            }
+            $lines = @(Get-Content $log)
+            $origin = ($lines | Select-String -Pattern 'game loopback origin=(http://127\.0\.0\.1:\d+) ' | Select-Object -First 1).Matches.Groups[1].Value
+            $o = if ($origin) { [regex]::Escape($origin) } else { 'MISSING-ORIGIN' }
+            $compressed = if ($level -eq 0) { 'false' } else { 'true' }
+            $last = -1
+            foreach ($pattern in @('game loopback origin=',
+                "game content archives=\d+ entries=\d+ code_files=\d+ code_bytes=\d+ archive_bytes=\d+ compressed=$compressed open_ms=\d+$",
+                "load-end status=200 url=$o/ ok=true", 'startup released generation=\d+ ',
+                'game content requests=[1-9]\d* misses=\d+ ', 'game loopback stopped', 'exit code=0$')) {
+              $at = -1
+              for ($j = $last + 1; $j -lt $lines.Count; $j++) { if ($lines[$j] -match $pattern) { $at = $j; break } }
+              if ($at -lt 0) { Write-Output "::error::level ${level}: missing or out of order: $pattern"; $failed = $true } else { $last = $at }
+            }
+            if ($proc.ExitCode -ne 0) { Write-Output "::error::level ${level}: exit code $($proc.ExitCode)"; $failed = $true }
+            foreach ($hit in @($lines | Select-String -Pattern ' FAIL ')) { Write-Output "::error::level ${level}: unexpected: $($hit.Line)"; $failed = $true }
+            $lines | Select-String -Pattern 'game content |load-end|startup released' | ForEach-Object { Write-Output "::notice::level ${level}: $($_.Line)" }
+          }
+          Remove-Item Env:ROVES_LOOSE_DIR, Env:ROVES_PACKED_DIR -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
           if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
           if ($failed) { exit 1 }

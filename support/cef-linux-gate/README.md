@@ -202,8 +202,9 @@ so libcef must resolve through the gate's own run path (CI checks `readelf`/`ldd
 
 ## Packaged game
 
-When `game/index.html` exists next to the executable, the gate runs an unmodified static game
-build instead of the fixture (`src/player.rs`), the Linux counterpart of the macOS player:
+When `game/index.html` (or packed content, `game/roves-content.json`: Windows player README
+"Packed game content", same reader, log `gate: game content ...`) exists next to the
+executable, the gate runs an unmodified static game build instead of the fixture (`src/player.rs`), the Linux counterpart of the macOS player:
 
 - `game/` is served by the shared loopback server (`support/cef-windows-player/src/server.rs`,
   compiled through `#[path]` as on Windows and macOS: axum + tower-http `ServeDir` on

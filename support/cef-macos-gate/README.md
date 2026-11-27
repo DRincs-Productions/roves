@@ -119,7 +119,9 @@ Added for the packaged-game slice (same revision, sparse paths added):
 ## Packaged game
 
 The same binary becomes a minimal player when its bundle contains
-`Contents/Resources/game/index.html` (`src/player.rs`); otherwise it runs the fixture gate.
+`Contents/Resources/game/index.html` or packed content `Contents/Resources/game/roves-content.json`
+(Windows player README "Packed game content", same reader, log `gate: game content ...`)
+(`src/player.rs`); otherwise it runs the fixture gate.
 Opening such an `.app` plays the game: no switch, no debug server.
 
 - **Serving**: `support/cef-windows-player/src/server.rs`, compiled through `#[path]` exactly

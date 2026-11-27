@@ -219,7 +219,7 @@ mod gate {
         }
         // The packaged game: an unmodified static build copied into the bundle's resources.
         let game_dir = contents.join("Resources").join("game");
-        let game = game_dir.join("index.html").is_file().then_some(game_dir);
+        let game = crate::server::content::is_game_dir(&game_dir).then_some(game_dir);
 
         // Our switches (README "Saves and the player profile", "Local MCP bridge"); Chromium
         // ignores them.
@@ -348,6 +348,9 @@ mod gate {
                     dir.display(),
                     server.origin
                 );
+                if let Some(content) = &server.content {
+                    println!("gate: game {content}");
+                }
                 // First launch of a persistent profile: keep this origin for every later one.
                 if let Some(profile) = profile.as_ref().filter(|p| p.stored_port.is_none()) {
                     let stored = crate::game_rules::origin_port(&server.origin)
@@ -511,6 +514,12 @@ mod gate {
 
     /// Stops the loopback server after CEF shut down. `false` when stopping failed.
     fn stop_server(server: Option<crate::server::Server>) -> bool {
+        if let Some(report) = server
+            .as_ref()
+            .and_then(crate::server::Server::content_report)
+        {
+            println!("gate: game {report}");
+        }
         match server.map(crate::server::Server::stop) {
             None => true,
             Some(Ok(())) => {

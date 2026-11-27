@@ -28,7 +28,7 @@ const CONSOLE_LOG_CAP: u32 = 500;
 const CONSOLE_MESSAGE_MAX: usize = 512;
 
 pub(crate) struct GameOptions {
-    /// Absolute game build directory (contains `index.html`).
+    /// Absolute game build directory (`index.html`, or packed content: `server::content`).
     pub(crate) dir: PathBuf,
     /// `--roves-port` (0 = a free port per run; a fixed port keeps the origin, and therefore
     /// the page's storage in a reused `--roves-cache-dir`, stable across runs).
@@ -39,8 +39,12 @@ impl GameOptions {
     pub(crate) fn new(dir: &str, port: u16) -> Result<Self, String> {
         // std::path::absolute, not canonicalize: no `\\?\` verbatim prefix (as the window probe).
         let dir = std::path::absolute(dir).map_err(|e| format!("--roves-game-dir={dir}: {e}"))?;
-        if !dir.join("index.html").is_file() {
-            return Err(format!("{} has no index.html", dir.display()));
+        if !server::content::is_game_dir(&dir) {
+            return Err(format!(
+                "{} has no index.html or {}",
+                dir.display(),
+                server::content::MANIFEST
+            ));
         }
         Ok(GameOptions { dir, port })
     }

@@ -30,8 +30,14 @@ const CEF_LIBRARIES: [&str; 3] = ["libcef.so", "libvk_swiftshader.so", "libvulka
 #[cfg(target_os = "linux")]
 const LICENSES: [(&str, &[u8]); 3] = [
     ("Roves-LICENSE.txt", include_bytes!("../../../LICENSE")),
-    ("MetalMania-OFL.txt", include_bytes!("../../../resources/fonts/MetalMania-OFL.txt")),
-    ("CEF-LICENSE.txt", include_bytes!("../../../resources/licenses/CEF-LICENSE.txt")),
+    (
+        "MetalMania-OFL.txt",
+        include_bytes!("../../../resources/fonts/MetalMania-OFL.txt"),
+    ),
+    (
+        "CEF-LICENSE.txt",
+        include_bytes!("../../../resources/licenses/CEF-LICENSE.txt"),
+    ),
 ];
 
 #[cfg(target_os = "linux")]
@@ -54,8 +60,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let licenses = output.join("licenses");
     std::fs::create_dir_all(&licenses)?;
-    std::fs::rename(output.join("CREDITS.html"), licenses.join("CEF-CREDITS.html"))
-        .map_err(|e| format!("moving CEF CREDITS.html into licenses/: {e}"))?;
+    std::fs::rename(
+        output.join("CREDITS.html"),
+        licenses.join("CEF-CREDITS.html"),
+    )
+    .map_err(|e| format!("moving CEF CREDITS.html into licenses/: {e}"))?;
     for (name, bytes) in LICENSES {
         std::fs::write(licenses.join(name), bytes)?;
     }

@@ -49,6 +49,19 @@ modules the other players share through `#[path]`),
 [`support/cef-linux-gate`](support/cef-linux-gate/README.md); the MCP server is in
 [`support/cef-windows-player/mcp`](support/cef-windows-player/mcp/README.md).
 
+### Packed game content
+
+By default `roves bundle` (roves-cli, with player v0.9.1 or later) writes the game folder as a
+few archives instead of loose files: one archive with all the code (JS chunks, CSS, HTML),
+asset archives grouped by top-level folder (at most 300 MB each), uncompressed by default.
+The player memory-maps them and serves files straight from memory, with read-ahead of the next
+files of the same folder; an optional compression level (1-9) makes the download smaller at
+some in-game cost. Options: `--content-layout archive|files`, `--compression-level 0-9`,
+`--max-archive-size` (also in roves-action and Roves Packmaster). Details in the
+[wiki](https://github.com/DRincs-Productions/roves-wiki) and
+[support/cef-windows-player/README.md](support/cef-windows-player/README.md) ("Packed game
+content").
+
 ## Mobile (experimental)
 
 Android APKs and iOS builds still come from the earlier Servo-based engine at the tag

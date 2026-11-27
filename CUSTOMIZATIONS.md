@@ -1,3 +1,36 @@
+## 2026-11-27 - Packed game content (memory-mapped archives) in the three players
+
+Changed: new `support/cef-windows-player/src/content.rs` (mounted by `server.rs`, so the
+Windows, macOS and Linux players and `support/cef-host-api-tests` share it), `server.rs`,
+`app.rs`, `game.rs`, `cef-linux-gate/src/main.rs`, `cef-macos-gate/src/main.rs`, the four
+`Cargo.toml`/`Cargo.lock`, `.github/workflows/cef-windows-player.yml`, the player READMEs,
+`README.md`, `skills/core/SKILL.md`, `docs/DEPENDENCY_REVIEW.md`, `TODO.md`; roves-cli
+(`src/content.ts`, `assemble.ts`, `desktop.ts`, `cli.ts`, `zip.ts`, tests).
+Why: user request. The game folder can now be a few archives instead of loose files:
+`roves-content.json` + `code.pack` (all code: JS chunks, CSS, HTML, JSON, WASM) +
+`data-<top folder>[-N].pack` (assets grouped by top-level folder, split at a size limit,
+default 300 MB), uncompressed by default, deflate 1-9 on request (media always stored).
+roves-cli writes them (`--content-layout archive|files`, `--compression-level`,
+`--max-archive-size`; default `archive` from player v0.9.1, with a fallback to loose files
+for an older `--shell-version`). The players follow Chromium's resource packs (f2700724f59f
+`ui/base/resource/data_pack.cc`, `resource_bundle.cc`): each archive is memory-mapped, only
+the ZIP central directory is parsed, stored entries are served as zero-copy views of the
+mapping (the OS page cache is the cache), compressed code is inflated at boot behind the
+startup screen and kept in RAM, compressed assets are inflated on demand into a bounded RAM
+cache (256 MiB) with CRC-32 checks; a background thread pages in (or inflates) the next
+entries of a requested file's archive and warms the archives after boot. The server builds
+the responses with ServeDir's rules and the unchanged cache policy; the server tests run on
+the fixture loose, stored and compressed. RAM vs disk cache: no disk cache, since
+re-extracting doubles the disk use and adds writes while a mapped stored archive is already
+as fast as RAM once paged in. New dependencies (players): `zip` 9.8.2 (no features),
+`memmap2` 0.9.12, `quick_cache` 0.7.0; `flate2`/`zlib-rs`, `crc32fast`, `bytes`,
+`http-range-header`, `mime_guess` were in the graph. zstd rejected (yazl cannot write zstd
+entries). Measured on the development PC (121 MB, 726 files): loose `fs::read` ~1-1.5 GB/s,
+p50 65-90 us; stored archive cold ~3.5 GB/s, p50 5 us, warm p50 0.5 us; compressed cold
+300-450 MB/s, warm 0.5 us. The real sample game packed by roves-cli reads back identical at
+levels 0 and 6. CI (Windows): benchmark step, and a packed-content step that packs the
+template with roves-cli, byte-checks it and launches the packaged game from the archives.
+
 ## 2026-11-27 - Player packages: build-only CEF files removed, license notices, stripped libcef.so
 
 Changed: `support/cef-windows-player/src/bin/bundle.rs`, `support/cef-linux-gate/src/bundle.rs`,

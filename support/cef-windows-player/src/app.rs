@@ -234,6 +234,9 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
                     crate::game::profile_dir(&options.cache_dir).display(),
                     std::process::id()
                 ));
+                if let Some(content) = &server.content {
+                    log.line(format_args!("game {content}"));
+                }
                 // Persistent profile, first launch: keep this origin for every later launch.
                 if let Some(profile) = profile.as_ref().filter(|p| p.stored_port.is_none()) {
                     let stored = origin_port(&server.origin)
@@ -529,6 +532,9 @@ fn game_origin_script(server: Option<&Server>, mcp: bool) -> Option<String> {
 /// Stops the game's loopback server, after CEF shut down (in-flight responses finish first).
 fn stop_server(log: &Log, server: Option<Server>) {
     if let Some(server) = server {
+        if let Some(report) = server.content_report() {
+            log.line(format_args!("game {report}"));
+        }
         match server.stop() {
             Ok(()) => log.line(format_args!("game loopback stopped")),
             Err(error) => log.line(format_args!("FAIL game loopback stop: {error}")),
@@ -874,7 +880,7 @@ impl Options {
             && let Some(dir) = exe
                 .as_deref()
                 .and_then(|exe| exe.parent().map(|p| p.join(PLAYER_GAME_DIR)))
-                .filter(|dir| dir.join("index.html").is_file())
+                .filter(|dir| crate::game::server::content::is_game_dir(dir))
         {
             game_dir = Some(dir.to_string_lossy().into_owned());
             options.player = true;
@@ -895,7 +901,7 @@ impl Options {
             if !options.player {
                 return Err(
                     "--roves-isolated-profile needs the packaged game directory \
-                            (game\\index.html next to the executable)"
+                            (game\\index.html or game\\roves-content.json next to the executable)"
                         .into(),
                 );
             }
@@ -925,7 +931,7 @@ impl Options {
         if no_error_dialog {
             if !options.player {
                 return Err("--roves-no-error-dialog needs the packaged game directory \
-                            (game\\index.html next to the executable)"
+                            (game\\index.html or game\\roves-content.json next to the executable)"
                     .into());
             }
             options.error_dialog = false;

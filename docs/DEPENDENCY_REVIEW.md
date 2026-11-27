@@ -14,6 +14,10 @@ Revisione del 26 novembre 2026, dopo il passaggio al player CEF. Lo storico è i
 | `tokio` | `1.47` | Server loopback del gioco e trasporto del bridge MCP. |
 | `steamworks` | `=0.13.1` (feature `steam`) | Variante Steam; mai fatale senza Steam. |
 | `serde_json`, `url`, `getrandom`, `log` | — | Host API, regole dei link, token MCP, inoltro dei log di welding. |
+| `zip` | `9.8.2` (senza feature) | Contenuto di gioco impacchettato: solo la lettura della directory centrale ZIP; i dati si leggono dalla mappatura. |
+| `memmap2` | `0.9.12` | Archivi del gioco mappati in memoria (come i `.pak` di Chromium). |
+| `quick_cache` | `0.7.0` (senza `parking_lot`) | Cache in RAM, limitata in byte, degli asset decompressi (solo archivi compressi). |
+| `flate2` + `zlib-rs`, `crc32fast`, `bytes`, `http-range-header`, `mime_guess` | già nel grafo | Inflate degli archivi compressi, verifica CRC, risposte senza copia, Range e MIME come ServeDir. |
 | Server MCP (Node) | `@modelcontextprotocol/server` 2.4.0, `zod` 4.4.3 | Solo nei pacchetti MCP di sviluppo. |
 
 ## Decisioni
@@ -21,6 +25,10 @@ Revisione del 26 novembre 2026, dopo il passaggio al player CEF. Lo storico è i
 - Il V8 e le API Web sono quelli di Chromium: non si aggiungono runtime JS o polyfill nativi.
 - Preferire le API di CEF, wgpu-weld, wgpu e SDL3 al codice scritto a mano; un fork resta
   temporaneo e documentato in `ROVES_PATCHES.md` con issue/PR upstream.
+- Contenuto impacchettato (27 novembre 2026): contenitore ZIP perché roves-cli lo scrive già
+  con `yazl` (nessuna dipendenza Node nuova) e il crate `zip` ne legge l'indice; zstd scartato
+  perché `yazl` non scrive entry zstd e servirebbe un formato o uno scrittore ZIP nostro;
+  deflate con `zlib-rs`, già nel grafo. `rc-zip` scartato (più dipendenze per lo stesso uso).
 - `image-size` scartato (26 novembre 2026) per il server MCP: richiede Node 22, il server
   supporta Node 20, e il bridge riporta già regione e scala degli screenshot.
 

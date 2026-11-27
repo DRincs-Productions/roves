@@ -32,3 +32,14 @@ tempfile = { version = "3", default-features = false }
 keycode = "1.0.0"
 # external_link.rs: URL parsing of the external-link rule (as in the players).
 url = "2.5.9"
+zip = { version = "9.8.2", default-features = false }
+memmap2 = "0.9.12"
+quick_cache = { version = "0.7.0", default-features = false }
+bytes = "1.12.2"
+http-range-header = "0.4.2"
+mime_guess = "2.0.5"
+flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
+crc32fast = "1.5.6"
+
+[dev-dependencies]
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }

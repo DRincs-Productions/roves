@@ -447,6 +447,68 @@ and `roves-static-fixture done ok=<bool> checks=9`.
   workflow) and `45455777871` (`cef-window-probe.yml`), both green on WARP; no real-GPU or
   real-game cache claim.
 
+## Packed game content (`roves-content.json`, implemented 2026-11-27)
+
+The game folder (`game\` next to `play.exe`, `Contents/Resources/game` on macOS, `game/` on
+Linux, or `--roves-game-dir`) is either the loose build (`index.html` at its root) or packed
+content written by roves-cli (`roves bundle`, default from player v0.9.1). The three players
+share the reader, `src/content.rs`, mounted by `server.rs`.
+
+**Layout (format 1).** `roves-content.json` (`{"format": 1, "code": "code.pack", "assets":
+[...]}`; roves-cli also records `compressionLevel` and `maxArchiveSize`, ignored here) next to
+ZIP archives: `code.pack` with `index.html` and every code file (`.html .htm .js .mjs .cjs .css
+.json .webmanifest .map .wasm`), and `data-<top folder>[-N].pack` with everything else, grouped
+by top-level folder (`data-root` for root files) in path order and split at the packer's size
+limit (default 300 MB). Entries are stored (default) or raw deflate (levels 1-9); images, audio,
+video, fonts and archives are always stored. Another format, a missing archive, a duplicate
+entry, an entry outside its archive, a compression other than stored/deflate or `index.html`
+outside `code.pack` stops the launch with an error naming the file; there is no fallback to
+loose files.
+
+**Reading, compared with Chromium** (`f2700724f59f`, `ui/base/resource/data_pack.cc` and
+`resource_bundle.cc`). Chromium's resource packs are memory-mapped once
+(`DataPack::LoadFromPathInternal`, `base::MemoryMappedFile`), resources are returned as views
+into the mapping (`GetStringView`, binary search on an id table) and compressed ones are
+inflated on request (`DecompressIfNeeded`). The players do the same with a path index built
+from the ZIP central directories (`zip` crate, nothing inflated by it): a stored entry is a
+zero-copy `Bytes` view of the mapping handed to the HTTP response, so the OS page cache is the
+only cache and can reclaim it. Differences, for a game rather than browser UI resources:
+compressed code is inflated once at boot (behind the startup screen; the page needs all of it)
+and kept in RAM; compressed assets are inflated on first request into a bounded RAM cache
+(`quick_cache`, 256 MiB, 4 shards so assets up to 64 MiB fit; concurrent requests for one
+entry inflate it once), never written back to disk; CRC-32 is checked on every inflation.
+
+**Prediction.** A request queues the next entries of its archive (64 entries or 32 MiB; the
+same folder's next files, by the packer's path order) on a background thread, which pages them
+in (stored) or inflates them into the cache (compressed). After boot the same thread pages in
+the asset archives sequentially, 4 MiB at a time, up to 1 GiB, always serving queued
+predictions first. Stored code is paged in at boot.
+
+**HTTP.** The loopback cache policy above is unchanged; the server builds the responses itself
+with ServeDir's rules (MIME from the path with the same `mime_guess` table, one-range `206`,
+`416` for multiple or invalid ranges, `307` from `dir` to `dir/`, `index.html` for `/` and
+`dir/`, `404` for `..`, `.`, empty segments, backslashes and bad escapes). The strong ETag is
+the entry's CRC-32 and size behind the instance token. The server tests run on the
+static-compatibility fixture loose, packed stored and packed at level 6.
+
+**Log.** `game content archives=<n> entries=<n> code_files=<n> code_bytes=<n>
+archive_bytes=<n> compressed=<bool> open_ms=<n>` after the loopback origin, and `game content
+requests=<n> misses=<n> inflated=<n> inflated_bytes=<n> predicted_bytes=<n> warmed_bytes=<n>`
+before `game loopback stopped` (macOS/Linux: `gate: game ...`).
+
+**Access speed.** `cargo test --release archive_access_speed -- --ignored --nocapture` in
+`support/cef-host-api-tests` (CI step "packed content access speed"): 726 synthetic assets,
+121 MB. On the development PC (Windows 11, NVMe, 2026-11-27): loose `fs::read` 994-1457 MB/s,
+p50 65-90 us; stored archive cold 3431-3637 MB/s, p50 5 us, p99 ~210 us; stored warm p50
+0.5 us; level 1/6 cold 300/450 MB/s, p50 59 us; compressed warm (cache) p50 0.5 us. The
+sample game (`visual-novel-template`, 31 files, 17.2 MB) packs to 3 archives; at level 6 it is
+3.9 MB and opens in 40 ms (code inflation).
+
+**CI.** "packed game content": roves-cli (submodule) packs the template's `dist/` stored and at
+level 6, `reads_roves_cli_archives` compares every file with `dist/`, and the plain package with
+the packed `game\` must log both `game content` lines, load with status 200, release the
+startup screen and exit 0 (WARP).
+
 ## Packaged player (directly playable Windows folder; implemented 2026-11-23, not yet run in CI)
 
 `cef-windows-player.yml` also produces the artifact
