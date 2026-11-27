@@ -9,8 +9,9 @@ file of the CEF distribution, so the packages carried the build-only `CMakeLists
 `archive.json` (cef-rs download metadata) and, on Windows, `libcef.lib`; the bundle binaries
 now delete them. `CREDITS.html` (Chromium's third-party notices, which the BSD/MIT/LGPL
 components require with the binaries) moves into the license folder instead of the package
-root. The workflow's copy of CEF license files never matched anything (download-cef 3.0.1 drops
-the distribution's `LICENSE.txt`), so no package carried CEF's own BSD license and the macOS
+root. The workflow's copy of CEF license files never matched anything (it searched one level under
+`CEF_PATH`, while cef-dll-sys keeps CEF in `$CEF_PATH/<cef version>/cef_<os>_<arch>/`, and
+download-cef 3.0.1 drops the distribution's `LICENSE.txt` anyway), so no package carried CEF's own BSD license and the macOS
 package carried no notices at all: CEF's `LICENSE.txt` (upstream `chromiumembedded/cef`) is now
 in the repository and every package ships Roves, Metal Mania OFL, CEF license and CEF credits in
 `provenance\licenses\` (Windows), `licenses/` (Linux) or `Contents/Resources/licenses/` (macOS,

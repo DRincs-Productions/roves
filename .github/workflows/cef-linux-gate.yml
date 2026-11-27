@@ -66,6 +66,7 @@ jobs:
             support/cef-macos-gate/player-fixture
             support/cef-windows-player/host-api-fixture
             resources/fonts
+            resources/licenses
           sparse-checkout-cone-mode: true
       - uses: dtolnay/rust-toolchain@master
         with:

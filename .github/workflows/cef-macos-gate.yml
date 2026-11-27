@@ -58,6 +58,7 @@ jobs:
             support/cef-windows-player/src
             support/cef-windows-player/mcp
             resources/fonts
+            resources/licenses
           sparse-checkout-cone-mode: true
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -128,7 +129,8 @@ jobs:
           # the framework) and the CEF, Roves and Metal Mania licenses.
           lic="$res/mac/licenses"
           mkdir -p "$lic"
-          credits="$(find "$CEF_PATH" -maxdepth 2 -name CREDITS.html | head -1)"
+          # cef-dll-sys: $CEF_PATH/<cef version>/cef_macos_aarch64/CREDITS.html
+          credits="$(find "$CEF_PATH" -maxdepth 3 -name CREDITS.html | head -1)"
           test -n "$credits" || { echo "::error::no CREDITS.html under $CEF_PATH"; exit 1; }
           cp "$credits" "$lic/CEF-CREDITS.html"
           cp resources/licenses/CEF-LICENSE.txt "$lic/CEF-LICENSE.txt"
