@@ -1576,7 +1576,7 @@ jobs:
             $identical = $check | Select-String -Pattern '^\d+ files identical$' | Select-Object -First 1
             if ($checkCode -ne 0 -or -not $identical) {
               $check | Select-Object -Last 30
-              Write-Output "::error::level $level: the archives differ from dist/"; $failed = $true; continue
+              Write-Output "::error::level ${level}: the archives differ from dist/"; $failed = $true; continue
             }
             Write-Output "::notice::level $level byte check: $($identical.Line)"
 
@@ -1595,7 +1595,7 @@ jobs:
             $null = $proc.Handle
             if (-not $proc.WaitForExit(150000)) {
               Get-Process play -ErrorAction SilentlyContinue | Stop-Process -Force
-              Write-Output "::error::level $level: the packed game did not exit in time"; $failed = $true; continue
+              Write-Output "::error::level ${level}: the packed game did not exit in time"; $failed = $true; continue
             }
             $lines = @(Get-Content $log)
             $origin = ($lines | Select-String -Pattern 'game loopback origin=(http://127\.0\.0\.1:\d+) ' | Select-Object -First 1).Matches.Groups[1].Value
