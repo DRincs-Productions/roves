@@ -62,6 +62,18 @@ some in-game cost. Options: `--content-layout archive|files`, `--compression-lev
 [support/cef-windows-player/README.md](support/cef-windows-player/README.md) ("Packed game
 content").
 
+### Mods and DLC (in progress)
+
+The player loads DLC and mods placed next to the game or in the player's profile: each one is
+a folder or a `.rovesmod` file with a `package.json` (id, name, description, version, the game
+versions it supports as an npm range, libraries) and an optional `cover` image. Files in its
+`overrides/` folder replace the game's, and its `main` module runs when the game calls
+`mods.loadAll(api)` from `@drincs/roves-api/mods`, which also lists add-ons and turns them on
+and off. DLC must be signed with the game's own key, so only the game's developer can make
+them. The packaging side in roves-cli (`roves mod init/dev/pack`) is not there yet. Details in
+the [wiki](https://github.com/DRincs-Productions/roves-wiki) and
+[support/cef-windows-player/README.md](support/cef-windows-player/README.md) ("Mods and DLC").
+
 ## Mobile (experimental)
 
 Android APKs and iOS builds still come from the earlier Servo-based engine at the tag

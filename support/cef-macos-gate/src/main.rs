@@ -100,7 +100,10 @@ mod window_icon;
 
 #[cfg(target_os = "macos")]
 fn main() {
-    std::process::exit(gate::run());
+    let code = gate::run();
+    // `core/relaunch` (Windows player README "Mods and DLC"): the profile lock is released.
+    host_api::relaunch_if_requested();
+    std::process::exit(code);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -230,6 +233,8 @@ mod gate {
                 isolated = true;
             } else if arg == "--roves-mcp" {
                 mcp_switch = true;
+            } else if arg.starts_with(crate::server::mods::DEV_SWITCH) {
+                // `roves mod dev`: read by `server::mods::dev_mod_dirs`.
             } else if arg.starts_with("--roves-") {
                 return Err(format!("unknown switch {arg}"));
             }
@@ -304,7 +309,16 @@ mod gate {
         let saves_dir = profile
             .as_ref()
             .map(|p| p.root.join(crate::game_rules::PLAYER_SAVES_DIR));
+        let profile_root = profile.as_ref().map(|p| p.root.clone());
         let start_game_server = |dir: &std::path::Path, port: u16| {
+            // Mods and DLC (Windows player README "Mods and DLC"), before the first request.
+            let mods = crate::server::mods::Mods::discover(crate::server::mods::ModsConfig {
+                game_dir: dir.to_owned(),
+                profile_root: profile_root.clone(),
+                dev: crate::server::mods::dev_mod_dirs(),
+                steam: steam.clone(),
+            });
+            println!("gate: {}", mods.summary());
             let exit = game_exit.clone();
             let (api, saves) = crate::host_api::HostApi::new(crate::host_api::HostConfig {
                 saves_dir: saves_dir.clone(),
@@ -313,12 +327,13 @@ mod gate {
                     let _ = exit.set(cmd);
                 }),
                 steam: steam.clone(),
+                mods: Some(std::sync::Arc::new(mods.clone())),
             });
             match saves {
                 Ok(dir) => println!("gate: host api saves dir={}", dir.display()),
                 Err(reason) => println!("gate: host api saves unavailable reason={reason}"),
             }
-            crate::server::start_with(dir, port, |origin| api.router(origin))
+            crate::server::start_with_mods(dir, port, Some(mods), |origin| api.router(origin))
         };
 
         // Packaged game: the loopback origin must be known before the browser is created,

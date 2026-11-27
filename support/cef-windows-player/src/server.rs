@@ -24,6 +24,11 @@
 //! behavior (MIME from the path, one-range `206`/`416`, `307` from `dir` to `dir/`,
 //! `index.html` for `/` and `dir/`). The strong ETag is the entry's CRC-32 and size, with
 //! the same instance token.
+//!
+//! Mods and DLC (`mods.rs`): an active add-on's `overrides/<path>` is served for the game path
+//! `<path>`, and `/__mods/<id>/<path>` serves the add-on's own files; both go through the same
+//! cache policy, from the add-on's folder (ServeDir) or `.rovesmod` archive. Paths that no add-on
+//! has fall through to the game, so a game without add-ons is served exactly as before.
 
 use std::{
     convert::Infallible,
@@ -49,6 +54,10 @@ use tower_http::services::ServeDir;
 #[path = "content.rs"]
 pub mod content;
 
+/// Mods and DLC (folders and `.rovesmod` archives), shared by the three players.
+#[path = "mods.rs"]
+pub mod mods;
+
 pub struct Server {
     pub origin: String,
     /// Boot report of packed content (`None` for a loose game folder).
@@ -67,9 +76,20 @@ pub fn start(root: &Path, port: u16) -> io::Result<Server> {
 
 /// [`start`] plus `routes`, built once the origin is known and matched before the game files
 /// (the players' host API, `host_api.rs`, under `/__roves/`).
+#[allow(dead_code)] // the players call `start_with_mods`; kept for the tests
 pub fn start_with(
     root: &Path,
     port: u16,
+    routes: impl FnOnce(&str) -> Router,
+) -> io::Result<Server> {
+    start_with_mods(root, port, None, routes)
+}
+
+/// [`start_with`] plus the add-ons of [`mods::Mods::discover`].
+pub fn start_with_mods(
+    root: &Path,
+    port: u16,
+    mods: Option<mods::Mods>,
     routes: impl FnOnce(&str) -> Router,
 ) -> io::Result<Server> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
@@ -84,7 +104,43 @@ pub fn start_with(
         },
         token: instance_token(),
     };
-    let app = routes(&origin).fallback(move |req: Request| files.clone().serve(req));
+    let addons = mods.map(|mods| {
+        let sources = mods
+            .sources()
+            .into_iter()
+            .map(|source| GameFiles {
+                source: match source {
+                    mods::Files::Dir(dir) => Source::Dir(ServeDir::new(dir)),
+                    mods::Files::Packed(content) => Source::Packed(content),
+                },
+                token: files.token.clone(),
+            })
+            .collect::<Vec<_>>();
+        (mods, std::sync::Arc::new(sources))
+    });
+    let app = routes(&origin).fallback(move |req: Request| {
+        let files = files.clone();
+        let addons = addons.clone();
+        async move {
+            let routed = addons.and_then(|(mods, sources)| {
+                addon_route(&mods, req.uri()).map(|(index, uri)| (sources, index, uri))
+            });
+            match routed {
+                Some((sources, index, uri)) => {
+                    let (mut parts, body) = req.into_parts();
+                    parts.uri = uri;
+                    sources[index]
+                        .clone()
+                        .serve(Request::from_parts(parts, body))
+                        .await
+                },
+                None if req.uri().path().starts_with(mods::URL_PREFIX) => {
+                    Ok(status(StatusCode::NOT_FOUND))
+                },
+                None => files.serve(req).await,
+            }
+        }
+    });
     let (shutdown, stopped) = oneshot::channel::<()>();
     let thread = std::thread::Builder::new()
         .name("roves-cef-loopback".into())
@@ -147,6 +203,24 @@ enum Source {
 struct GameFiles {
     source: Source,
     token: String,
+}
+
+/// Add-on request -> (source index, URI inside that source): `/__mods/<id>/<path>`, or a game
+/// path that an active add-on overrides. `None`: serve the game (or 404 under `/__mods/`).
+fn addon_route(mods: &mods::Mods, uri: &axum::http::Uri) -> Option<(usize, axum::http::Uri)> {
+    let (index, inner) = match uri.path().strip_prefix(mods::URL_PREFIX) {
+        Some(rest) => {
+            let decoded = String::from_utf8(percent_decode(rest)?).ok()?;
+            mods.addon_file(&decoded)?
+        },
+        None => mods.overlay(&entry_path(uri.path())?)?,
+    };
+    let mut target = format!("/{}", mods::encode_path(&inner));
+    if let Some(query) = uri.query() {
+        target.push('?');
+        target.push_str(query);
+    }
+    Some((index, target.parse().ok()?))
 }
 
 /// Request path -> game-relative entry path (`/` and `dir/` -> `index.html`), or `None` for

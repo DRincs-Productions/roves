@@ -107,6 +107,13 @@ open = "5.4.5"
 # `steam` feature only: steamworks-rs (MIT/Apache-2.0), the Windows player's pin
 # (steamworks-sys 0.13.0 bundles the Steamworks SDK redistributables, Valve's SDK terms).
 steamworks = { version = "=0.13.1", optional = true }
+# Mods and DLC (support/cef-windows-player/src/mods.rs, through server.rs; README "Mods and
+# DLC"): npm version ranges of package.json (nodejs-semver, Apache-2.0: npm's rules, which the
+# `semver` crate's Cargo rules differ from), the DLC signature check (ed25519-dalek,
+# BSD-3-Clause, verification only) and the SHA-256 of every signed file (sha2, MIT/Apache-2.0).
+nodejs-semver = { version = "7.0.0", default-features = false }
+sha2 = { version = "0.11.2", default-features = false }
+ed25519-dalek = { version = "3.0.0", default-features = false }
 
 [build-dependencies]
 # build.rs only (support/cef-windows-player/build_wordmark.rs, `#[path]`): rasterizes the

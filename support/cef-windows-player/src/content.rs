@@ -316,8 +316,8 @@ impl Content {
             return None;
         };
         let archive = &inner.archives[entry.archive as usize];
-        let bytes = if entry.archive == 0 && entry.method == Method::Deflated {
-            inner.code.get(path)?.clone()
+        let bytes = if let Some(code) = inner.code.get(path) {
+            code.clone()
         } else {
             match entry.method {
                 Method::Stored => Bytes::from_owner(MapSlice {
@@ -338,6 +338,44 @@ impl Content {
             bytes,
             crc: entry.crc,
         })
+    }
+
+    /// One standalone archive (a packed mod or DLC, `mods.rs`): every entry is served like an
+    /// asset (stored zero-copy, compressed inflated on request into the cache), with no entry
+    /// document, no boot inflation, no prediction and no warm-up thread.
+    pub fn open_archive(path: &Path) -> io::Result<Content> {
+        let file = File::open(path).map_err(|e| invalid(format!("{}: {e}", path.display())))?;
+        // SAFETY: as for the game archives, a read-only file of the installation or profile
+        // that must not be truncated while the player runs.
+        let map = Arc::new(unsafe { Mmap::map(&file) }?);
+        let mut entries = HashMap::new();
+        let order = index_archive(&map, 0, &mut entries)
+            .map_err(|e| invalid(format!("{}: {e}", path.display())))?;
+        let summary = format!("archive entries={} bytes={}", order.len(), map.len());
+        let inner = Inner {
+            archives: vec![Archive {
+                name: path.display().to_string(),
+                map,
+                order,
+                predicted: AtomicU32::new(0),
+            }],
+            entries,
+            code: HashMap::new(),
+            cache: new_cache(),
+            stats: Stats::default(),
+        };
+        // No worker: predictions are never sent for archive 0, and a closed queue is ignored.
+        let (jobs, _) = mpsc::channel();
+        Ok(Content {
+            inner: Arc::new(inner),
+            jobs,
+            summary,
+        })
+    }
+
+    /// Every entry path, in no particular order.
+    pub fn paths(&self) -> impl Iterator<Item = &str> {
+        self.inner.entries.keys().map(String::as_str)
     }
 
     /// Whether the path is an entry (directory redirects: `dir` -> `dir/`).
@@ -681,7 +719,9 @@ pub(crate) mod tests {
     fn reads_roves_cli_archives() {
         let loose = std::path::PathBuf::from(std::env::var("ROVES_LOOSE_DIR").unwrap());
         let packed = std::path::PathBuf::from(std::env::var("ROVES_PACKED_DIR").unwrap());
-        let content = Content::open(&packed).unwrap().expect("no roves-content.json");
+        let content = Content::open(&packed)
+            .unwrap()
+            .expect("no roves-content.json");
         println!("{}", content.summary);
         let mut stack = vec![loose.clone()];
         let mut count = 0;
@@ -692,13 +732,24 @@ pub(crate) mod tests {
                     stack.push(path);
                     continue;
                 }
-                let rel = path.strip_prefix(&loose).unwrap().to_string_lossy().replace('\\', "/");
+                let rel = path
+                    .strip_prefix(&loose)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 let hit = content.get(&rel).unwrap_or_else(|| panic!("{rel} missing"));
-                assert!(hit.bytes[..] == std::fs::read(&path).unwrap()[..], "{rel} differs");
+                assert!(
+                    hit.bytes[..] == std::fs::read(&path).unwrap()[..],
+                    "{rel} differs"
+                );
                 count += 1;
             }
         }
-        assert_eq!(count, content.inner.entries.len(), "extra entries in the archives");
+        assert_eq!(
+            count,
+            content.inner.entries.len(),
+            "extra entries in the archives"
+        );
         println!("{count} files identical");
     }
 

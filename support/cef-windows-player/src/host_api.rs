@@ -18,7 +18,7 @@
 //!
 //! No response carries CORS headers; every response is `Cache-Control: no-store`.
 //! Commands that change state require `POST`. Modules are a name -> [`Module`] map: `core`,
-//! `saves` and `steam` (Steamworks only through a player-supplied [`SteamApi`]; this file never
+//! `saves`, `steam` and `mods` (`server::mods`) (Steamworks only through a player-supplied [`SteamApi`]; this file never
 //! links Steamworks, so every player builds it).
 
 use std::{
@@ -67,6 +67,30 @@ pub struct HostConfig {
     /// The player's Steamworks client (Windows player `steam` feature); `None`, or a handle
     /// already shut down, makes every `steam` command answer the legacy "unavailable" result.
     pub steam: Option<Arc<SteamHandle>>,
+    /// The `mods` module (`server::mods::Mods`, README "Mods and DLC"); `None` answers "not
+    /// supported" with an empty list.
+    pub mods: Option<Arc<dyn Module>>,
+}
+
+/// Set by `core/relaunch`; the player's entry point starts the game again after the browser
+/// shut down and the profile lock was released ([`relaunch_if_requested`]).
+static RELAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Called by each player's entry point after its run returned: when the page asked for
+/// `core/relaunch`, starts the same executable with the same arguments (a new process, so
+/// mods and DLC enabled or disabled since the launch load from the start).
+pub fn relaunch_if_requested() {
+    if !RELAUNCH.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let started = std::env::current_exe().and_then(|exe| {
+        std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .spawn()
+    });
+    if let Err(error) = started {
+        eprintln!("roves: relaunch failed: {error}");
+    }
 }
 
 /// Answer of one command.
@@ -86,14 +110,14 @@ pub struct Call<'a> {
 }
 
 impl Call<'_> {
-    fn arg(&self, name: &str) -> Option<&str> {
+    pub fn arg(&self, name: &str) -> Option<&str> {
         self.query
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, v)| v.as_str())
     }
 
-    fn post(&self) -> bool {
+    pub fn post(&self) -> bool {
         self.method == Method::POST
     }
 }
@@ -130,6 +154,7 @@ impl HostApi {
                 handle: config.steam,
             }),
         );
+        modules.insert("mods", config.mods.unwrap_or_else(|| Arc::new(NoMods)));
         (
             Self {
                 modules: Arc::new(modules),
@@ -293,8 +318,30 @@ impl Module for Core {
                 (self.request_exit)(cmd);
                 Reply::Json(Value::Bool(true))
             },
-            "exit" | "close_window" | "clear_content_cache" => {
+            // Closes through the ordinary path; the entry point then starts the game again.
+            "relaunch" if call.post() => {
+                RELAUNCH.store(true, std::sync::atomic::Ordering::SeqCst);
+                (self.request_exit)("exit");
+                Reply::Json(Value::Bool(true))
+            },
+            "exit" | "close_window" | "clear_content_cache" | "relaunch" => {
                 Reply::Error(StatusCode::METHOD_NOT_ALLOWED, "POST only")
+            },
+            _ => Reply::Error(StatusCode::NOT_FOUND, "unknown command"),
+        }
+    }
+}
+
+/// `mods` without mod support (no `server::mods::Mods` given).
+struct NoMods;
+
+impl Module for NoMods {
+    fn call(&self, cmd: &str, _: &Call<'_>) -> Reply {
+        match cmd {
+            "is_supported" | "restart_required" => Reply::Json(Value::Bool(false)),
+            "list" => Reply::Json(Value::Array(Vec::new())),
+            "set_enabled" | "set_order" => {
+                Reply::Error(StatusCode::SERVICE_UNAVAILABLE, "mods unavailable")
             },
             _ => Reply::Error(StatusCode::NOT_FOUND, "unknown command"),
         }
@@ -1211,6 +1258,7 @@ mod tests {
                 counter.fetch_add(1, Ordering::SeqCst);
             }),
             steam: None,
+            mods: None,
         });
         assert!(status.is_ok());
         let router = api.router(ORIGIN);

@@ -40,6 +40,13 @@ http-range-header = "0.4.2"
 mime_guess = "2.0.5"
 flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
 crc32fast = "1.5.6"
+# Mods and DLC (support/cef-windows-player/src/mods.rs, through server.rs; README "Mods and
+# DLC"): npm version ranges of package.json (nodejs-semver, Apache-2.0: npm's rules, which the
+# `semver` crate's Cargo rules differ from), the DLC signature check (ed25519-dalek,
+# BSD-3-Clause, verification only) and the SHA-256 of every signed file (sha2, MIT/Apache-2.0).
+nodejs-semver = { version = "7.0.0", default-features = false }
+sha2 = { version = "0.11.2", default-features = false }
+ed25519-dalek = { version = "3.0.0", default-features = false }
 
 [dev-dependencies]
 zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }

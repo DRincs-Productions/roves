@@ -795,8 +795,8 @@ render-process handler, so registering schemes would need a welding fork (reject
 player instead serves same-origin routes on the game's loopback server:
 `http://127.0.0.1:<port>/__roves/<module>/<cmd>` (`support/cef-windows-player/src/host_api.rs`,
 shared through `#[path]` with the macOS and Linux gates; modules are a name -> handler map:
-`core`, `saves`, `steam`, section "Steam"). A game directory must not contain a `__roves` folder: the prefix is
-never served from the game files.
+`core`, `saves`, `steam`, section "Steam", `mods`, section "Mods and DLC"). A game directory must not
+contain a `__roves` or `__mods` folder: those prefixes are never served from the game files.
 
 - **Discovery:** every game-mode launch defines `window.__ROVES__ = Object.freeze({ transport:
   "http", api: "/__roves/" })` (read-only, top-level game document only, before any page
@@ -819,7 +819,10 @@ never served from the game files.
   OS close request (log `close requested by the game command=exit`); `clear_content_cache`
   (`POST`) has no extraction cache to clear (the game is served from the package and every
   response is revalidated, section "Loopback cache policy") and keeps its documented
-  contract: the game closes. `is_available` answers `true`. Servo's `save_file` is not ported.
+  contract: the game closes. `relaunch` (`POST`) closes the same way and, once the run
+  returned and the profile lock is released, the entry point starts the same executable with
+  the same arguments (`host_api::relaunch_if_requested`). `is_available` answers `true`.
+  Servo's `save_file` is not ported.
 - **saves:** files `<profile root>\saves\<key>.save` of the persistent player profile;
   without one (`--roves-game-dir`, `--roves-isolated-profile`) every command answers the
   Servo "unavailable" values (`is_available` false). Commands and JSON replies are the
@@ -848,6 +851,65 @@ never served from the game files.
   capturer (`FrameSinkVideoCapturerImpl::RequestRefreshFrame` -> `kRefreshDemand`, which
   captures the current surface without new damage). Release of a static page on a real GPU
   is a manual check (CI has no GPU).
+
+## Mods and DLC (`mods.rs`, implemented 2026-11-27, not yet run in CI)
+
+`support/cef-windows-player/src/mods.rs`, mounted by `server.rs` next to `content.rs`, so the
+three players and `support/cef-host-api-tests` share it. User documentation: the wiki page
+"Mods and DLC".
+
+- **Game identity:** `game/roves-game.json` (written by roves-cli next to the build or the
+  content archives, never inside them): `{"format": 1, "name", "version", "mods": bool,
+  "dlcPublicKey": base64 Ed25519, "shared": {lib: version}}`, `name`/`version` from the
+  game's `package.json`. Without the file the game has no mod support (older packages): the
+  `mods` module answers `is_supported` false and an empty list.
+- **Discovery** (once, before the server starts; one `mods ...` log line): every
+  `--roves-dev-mod=<folder>` (`roves mod dev`), then `dlc/` and `mods/` next to `game/` and
+  `<profile root>/mods`. An add-on is a folder with `package.json` or a `.rovesmod` file (a ZIP
+  of that folder, memory-mapped through `content::Content::open_archive`, entries stored or
+  deflated). With `"mods": false`, `mods/` folders are not scanned and dev mods are refused;
+  DLC still load. A broken `package.json` or a duplicate id is skipped and logged.
+- **package.json:** `name` (id, npm rules), `displayName`, `description`, `author`,
+  `version` (semver), `main` (ES module, optional), `peerDependencies` (libraries reused from
+  the game: each must be in `shared` with a version in range), `dependencies` (bundled,
+  reported only), and `roves`: `kind` (`mod`/`dlc`), `game: {name, version range}`, `mods`
+  (required add-ons with ranges), `steamAppId` (DLC). Ranges follow npm through
+  `nodejs-semver` (the `semver` crate's Cargo rules differ: bare versions, `||`, hyphen
+  ranges). The cover is `cover.png`/`cover.jpg`/`cover.webp` at the root.
+- **DLC are the developer's:** a DLC (outside `--roves-dev-mod`) must carry
+  `roves-signature.json` `{"format": 1, "files": {path: sha256 hex}, "signature": base64}`.
+  The Ed25519 signature (`ed25519-dalek` `verify_strict`) covers
+  `roves-dlc-signature-v1
+` plus one `<sha256>  <path>
+` line per file in path order; every
+  other file must be listed and match its SHA-256 (`sha2`), so nothing can be added, removed or
+  changed. The key pair belongs to the game's source (roves-cli); only the public key ships.
+  The whole DLC is hashed at launch (a few hundred MB/s to GB/s); a `steamAppId` also needs
+  Steam's `is_dlc_installed`. A `kind: "mod"` in `dlc/` is refused.
+- **Compatibility:** game name and version range, shared libraries, then required add-ons
+  (present, enabled, compatible, in range), repeated until stable. Every reason is reported in
+  `problems`; an add-on with problems never loads.
+- **Load order and state:** the saved order (`<profile root>/mods.json`: `disabled` ids and
+  `order`, written atomically; in memory without a persistent profile), then dev add-ons, DLC,
+  mods, each by id. New add-ons are enabled. The active set is fixed at launch (one document
+  per window, reloads blocked); Chromium applies its per-extension prefs live
+  (`extensions/browser/extension_prefs.cc` at `f2700724f59f`, `disable_reasons`), the player
+  applies a change at the next launch (`core/relaunch`).
+- **Serving** (`server.rs`, same cache policy as the game): for a game path, the last active
+  add-on in load order with `overrides/<path>` wins, otherwise the game; `/__mods/<id>/<path>`
+  serves an active add-on's own files (folders through ServeDir, archives from the mapping),
+  and only the cover of an inactive one, as Chromium serves only enabled extensions' resources
+  except their icons (`extension_protocols.cc`, `GetDirectoryForExtensionURL`). Everything
+  else under `/__mods/` is `404`. Without add-ons the game is served as before.
+- **Host API `mods`:** `is_supported`, `list` (id, kind, name, description, author, version,
+  `cover_url`, `main_url`, location, `enabled`, `active`, `compatible`, `problems`, game,
+  requires, libraries, `steam_app_id`), `restart_required`; `POST` `set_enabled?id=&enabled=`,
+  `set_order` (JSON array body). roves-api `mods.loadAll(api)` imports each active `main_url`
+  and calls its `activate(api, info)`.
+- **Tests:** `support/cef-host-api-tests` (`server::mods::tests`): game file and ids,
+  compatibility rules, signed/tampered/extended/unsigned DLC, Steam DLC without Steam, mods
+  turned off, state and load order across two launches, a `.rovesmod` archive, and the
+  routes over real HTTP (override, encoded path, own files, inactive cover, `..`, unknown id).
 
 ## Steam (`steam` feature, off by default; implemented 2026-11-25, not yet run in CI)
 

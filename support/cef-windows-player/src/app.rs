@@ -474,6 +474,15 @@ fn start_game_server(
     steam: Option<Arc<SteamHandle>>,
 ) -> std::io::Result<Server> {
     use crate::game::host_api::{HostApi, HostConfig};
+    use crate::game::server::mods::{Mods, ModsConfig, dev_mod_dirs};
+    // Mods and DLC (README "Mods and DLC"): found and checked once, before the first request.
+    let mods = Mods::discover(ModsConfig {
+        game_dir: game.dir.clone(),
+        profile_root: options.player_profile.clone(),
+        dev: dev_mod_dirs(),
+        steam: steam.clone(),
+    });
+    log.line(format_args!("{}", mods.summary()));
     let exit = game_exit.clone();
     let (api, saves) = HostApi::new(HostConfig {
         saves_dir: options
@@ -485,12 +494,15 @@ fn start_game_server(
             let _ = exit.set(cmd);
         }),
         steam,
+        mods: Some(Arc::new(mods.clone())),
     });
     match saves {
         Ok(dir) => log.line(format_args!("host api saves dir={}", dir.display())),
         Err(reason) => log.line(format_args!("host api saves unavailable reason={reason}")),
     }
-    crate::game::server::start_with(&game.dir, game.port, |origin| api.router(origin))
+    crate::game::server::start_with_mods(&game.dir, game.port, Some(mods), |origin| {
+        api.router(origin)
+    })
 }
 
 /// `steam` feature, game mode only: Steamworks for the host API's `steam` module. Steam
@@ -830,6 +842,8 @@ impl Options {
                 "warmup-ms" => options.warmup = parse_ms(name, value)?,
                 "sample-ms" => options.sample = parse_ms(name, value)?,
                 "game-dir" => game_dir = Some(value.to_owned()),
+                // `roves mod dev`: read by `server::mods::dev_mod_dirs` (README "Mods and DLC").
+                "dev-mod" if !value.is_empty() => {},
                 "port" => {
                     port = Some(
                         value

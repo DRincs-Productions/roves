@@ -9,6 +9,19 @@ nella stessa sessione).
 Questo file contiene solo lavoro **non ancora fatto**. Una volta completata una voce, va
 rimossa da qui (il suo racconto/dettaglio storico vive in `CUSTOMIZATIONS.md`, non qui).
 
+## Mod e DLC — fase 1 fatta (player + roves-api), resto da fare
+
+Fatto il 27 novembre 2026: scoperta, compatibilità, firma DLC, stato, route e modulo `mods`
+nei tre player (`support/cef-windows-player/src/mods.rs`) e in roves-api (`mods`,
+`process.relaunch`). Da fare, nell'ordine:
+
+- [ ] **roves-cli:** `roves bundle` scrive `game/roves-game.json` (nome e versione dal `package.json`, `--mods=false`, chiave pubblica DLC, librerie condivise) e accetta `--dlc <cartella|.rovesmod>` (in `dlc/` accanto a `game/`); generazione della coppia di chiavi DLC con il sorgente del gioco (chiave privata mai nel pacchetto, segreto per la CI); `roves mod init [--kit]`, `roves mod dev --game <cartella>` (`--roves-dev-mod=`), `roves mod check`, `roves mod pack` (file da `files` come `npm pack`, versioni esatte delle `dependencies`, firma dei DLC); mod kit (tipi dell'API passata a `loadAll`, librerie condivise, nome e versione del gioco).
+- [ ] **Librerie condivise (fase 3):** import map generato da roves-cli/plugin Vite per le librerie che il gioco condivide, chunk separati; `shared` in `roves-game.json`. Le mod con `peerDependencies` restano incompatibili finché il gioco non condivide le librerie.
+- [ ] **roves-action, Packmaster:** opzioni `--mods`, `--dlc`; Packmaster con selettore "Game / Mods & DLC" e schermata per creare e impacchettare una mod.
+- [ ] **Release e pin:** pubblicare roves-api (versione nuova), release del player, aggiornare i pin; poi togliere "Coming soon" dalla pagina wiki `integrations/mods-dlc` e pubblicarla.
+- [ ] **Verifiche reali:** `core/relaunch` sui tre sistemi (macOS: avvio del binario interno al bundle), DLC grandi (tempo di hash all'avvio: valutare una cache della verifica per dimensione e data), mod con `main` caricata da un gioco Pixi'VN reale.
+- [ ] **Steam Workshop (rinviato):** iscrizione alle mod tramite UGC di steamworks-rs.
+
 ## Android: integrazione con Google Play — da implementare
 
 In `main` non risultano SDK o bridge per Google Play Games Services, Billing o

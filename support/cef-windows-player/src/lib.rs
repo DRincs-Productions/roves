@@ -54,7 +54,10 @@ pub unsafe extern "C" fn RunWinMain(
 ) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // SAFETY: forwarded unchanged from bootstrap.exe (see above).
-        unsafe { app::run(instance.0.cast(), sandbox_info) }
+        let code = unsafe { app::run(instance.0.cast(), sandbox_info) };
+        // `core/relaunch` (README "Mods and DLC"): the profile lock is released by now.
+        game::host_api::relaunch_if_requested();
+        code
     }))
     .unwrap_or_else(|_| {
         eprintln!("roves-cef-win panic escaped the browser entry point");

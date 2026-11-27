@@ -1,3 +1,31 @@
+## 2026-11-27 - Mods and DLC in the three players and roves-api (phase 1)
+
+Changed: new `support/cef-windows-player/src/mods.rs` (mounted by `server.rs`, shared by the
+three players and `support/cef-host-api-tests`), `server.rs` (`start_with_mods`, add-on
+routes), `content.rs` (`Content::open_archive`, `paths`), `host_api.rs` (`mods` module slot,
+`core/relaunch`, `relaunch_if_requested`), `app.rs`, `lib.rs`, `cef-macos-gate/src/main.rs`,
+`cef-linux-gate/src/main.rs`, the four `Cargo.toml`/`Cargo.lock`, the player README, `README.md`,
+`TODO.md`; roves-api (`src/mods.ts`, `src/process.ts` `relaunch()`, tests, README); roves-wiki
+(`integrations/mods-dlc`, still marked "Coming soon").
+
+Why: user request. Games can list DLC and mods (id, name, description, cover, version,
+compatibility and reasons, required mods, shared and bundled libraries) and turn them on and
+off through roves-api; mods replace game files (`overrides/`) and run code the game loads
+(`mods.loadAll(api)`). Add-ons are described by an ordinary `package.json` (npm fields plus a
+`roves` section) and npm version ranges (`nodejs-semver`). The user required DLC to be made only
+by the game's developer: a DLC must be signed (Ed25519, `ed25519-dalek`; SHA-256 of every file,
+`sha2`) with the key kept with the game's source, verified with the public key in
+`game/roves-game.json`. Changes apply at the next launch (`core/relaunch`), as the player keeps
+one document and blocks reloads. Chromium reference (`f2700724f59f`):
+`extensions/browser/extension_prefs.cc` (per-extension state in the profile, applied live),
+`extension_protocols.cc` (only enabled extensions' resources served, icons excepted),
+`ui/base/resource/resource_bundle.cc` (first-loaded pack wins; the player lets the last add-on
+in load order win, the usual mod-manager rule). Libraries evaluated: Module Federation
+(rejected for now: runtime and plugin in every game; native import maps are planned for shared
+libraries), the `semver` crate (rejected: Cargo range rules, not npm's), minisign (rejected: a
+signature of one file, while the player checks every file of folders and archives). roves-cli
+packaging, shared libraries, roves-action and Packmaster are listed in `TODO.md`.
+
 ## 2026-11-27 - Packed game content (memory-mapped archives) in the three players
 
 Changed: new `support/cef-windows-player/src/content.rs` (mounted by `server.rs`, so the
