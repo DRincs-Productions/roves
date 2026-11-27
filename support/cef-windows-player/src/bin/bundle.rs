@@ -9,6 +9,14 @@
 //! built here with them and laid out by cef-rs' `bundle`. With `steam` (README "Steam"),
 //! steamworks-sys's `steam_api64.dll` (located through cargo's own build-script messages) is
 //! copied next to the executable.
+//!
+//! cef-rs copies every top-level file of the CEF distribution; the build-only ones
+//! (`BUILD_ONLY`) are removed again. `CREDITS.html` stays here and the packaging step moves it
+//! into `provenance\licenses\` (Chromium's third-party notices must ship with the binaries).
+
+/// Files of the CEF distribution needed only to build against CEF, never at run time.
+#[cfg(windows)]
+const BUILD_ONLY: [&str; 3] = ["CMakeLists.txt", "archive.json", "libcef.lib"];
 
 #[cfg(windows)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,6 +51,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             exe
         },
     };
+    for file in BUILD_ONLY {
+        match std::fs::remove_file(output.join(file)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {},
+        }
+    }
     println!("Run the probe from {}", exe.display());
     Ok(())
 }

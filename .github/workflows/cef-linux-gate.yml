@@ -150,6 +150,17 @@ jobs:
           for f in libcef.so chrome-sandbox icudtl.dat resources.pak v8_context_snapshot.bin locales/en-US.pak; do
             test -e "$out/$f" || { echo "::error::missing $f"; exit 1; }
           done
+          # bundle.rs: build-only CEF files removed, license files in licenses/, CEF libraries stripped.
+          for f in CMakeLists.txt archive.json CREDITS.html; do
+            test ! -e "$out/$f" || { echo "::error::the bundle still contains $f"; exit 1; }
+          done
+          for f in Roves-LICENSE.txt MetalMania-OFL.txt CEF-LICENSE.txt CEF-CREDITS.html; do
+            test -s "$out/licenses/$f" || { echo "::error::missing licenses/$f"; exit 1; }
+          done
+          if readelf -S "$out/libcef.so" | grep -qE '\.(symtab|debug_info)'; then
+            echo "::error::libcef.so is not stripped"; exit 1
+          fi
+          echo "::notice::libcef.so $(stat -c %s "$out/libcef.so") bytes (stripped)"
           # The zygote may be started through the setuid chrome-sandbox, which drops
           # LD_LIBRARY_PATH: libcef must resolve through the binary's own run path.
           readelf -d "$gate" | grep -E 'RUNPATH|RPATH' | grep -q '\$ORIGIN' \

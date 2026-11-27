@@ -1261,10 +1261,15 @@ jobs:
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'LICENSE') (Join-Path $licenses 'Roves-LICENSE.txt')
           # The startup wordmark embeds glyphs rasterized from this font (build.rs).
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'resources/fonts/MetalMania-OFL.txt') (Join-Path $licenses 'MetalMania-OFL.txt')
-          $cefFiles = @(Get-ChildItem -LiteralPath $env:CEF_PATH -Recurse -Depth 1 -File -Include 'LICENSE.txt', 'CREDITS.html', 'README.txt' -ErrorAction SilentlyContinue)
-          foreach ($f in $cefFiles) { Copy-Item -LiteralPath $f.FullName (Join-Path $licenses "CEF-$($f.Name)") }
-          if (-not ($cefFiles | Where-Object Name -eq 'LICENSE.txt')) {
-            Write-Output "::warning::no CEF LICENSE.txt found under $env:CEF_PATH (not copied into the package)"
+          # CEF's BSD license (download-cef drops the distribution's LICENSE.txt) and Chromium's
+          # third-party notices, moved out of the package root.
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'resources/licenses/CEF-LICENSE.txt') (Join-Path $licenses 'CEF-LICENSE.txt')
+          $credits = Join-Path $pkg 'CREDITS.html'
+          if (Test-Path -LiteralPath $credits) { Move-Item -LiteralPath $credits (Join-Path $licenses 'CEF-CREDITS.html') }
+          else { Write-Output '::error::the bundle lacks CEF CREDITS.html'; $failed = $true }
+          # Build-only files of the CEF distribution (removed by the bundle binary).
+          foreach ($buildOnly in @('CMakeLists.txt', 'archive.json', 'libcef.lib')) {
+            if (Test-Path -LiteralPath (Join-Path $pkg $buildOnly)) { Write-Output "::error::the package contains $buildOnly"; $failed = $true }
           }
           $buildInfo = Get-Content (Join-Path $env:RUNNER_TEMP 'vnt-build-info.txt')
           $cefVersion = (Select-String -Path (Join-Path $env:RUNNER_TEMP 'cef-win-run\roves-cef-win.log') -Pattern 'versions .*' -ErrorAction SilentlyContinue |
@@ -1306,7 +1311,7 @@ jobs:
             provenance\Cargo.lock, provenance\rust-dependencies.txt (crate + license)
             provenance\visual-novel-template-package-lock.json, ...-npm-ls.txt
             provenance\imports.txt (DLL imports of every top-level module and where each resolves)
-            provenance\licenses\ (Roves license; Metal Mania OFL; CEF license files when present)
+            provenance\licenses\ (Roves license; Metal Mania OFL; CEF license; Chromium third-party notices CEF-CREDITS.html)
             app-local VC++ runtime: $(if ($copied.Count) { $copied -join '; ' } else { 'none needed' })
           "@ | Set-Content -Encoding utf8 (Join-Path $pkg 'PROVENANCE.txt')
           Push-Location $pkg

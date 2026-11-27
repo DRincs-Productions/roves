@@ -123,6 +123,17 @@ jobs:
           # copies from <resources>/mac into Contents/Resources (CFBundleIconFile).
           res="$RUNNER_TEMP/gate-resources"
           bash support/cef-macos-gate/packaging/icns.sh icon.png "$res/mac/roves-cef-macos-gate.icns"
+          # License files, copied the same way into Contents/Resources/licenses: Chromium's
+          # third-party notices (CREDITS.html of the CEF distribution; cef's bundler copies only
+          # the framework) and the CEF, Roves and Metal Mania licenses.
+          lic="$res/mac/licenses"
+          mkdir -p "$lic"
+          credits="$(find "$CEF_PATH" -maxdepth 2 -name CREDITS.html | head -1)"
+          test -n "$credits" || { echo "::error::no CREDITS.html under $CEF_PATH"; exit 1; }
+          cp "$credits" "$lic/CEF-CREDITS.html"
+          cp resources/licenses/CEF-LICENSE.txt "$lic/CEF-LICENSE.txt"
+          cp LICENSE "$lic/Roves-LICENSE.txt"
+          cp resources/fonts/MetalMania-OFL.txt "$lic/MetalMania-OFL.txt"
           echo "GATE_RESOURCES=$res" >> "$GITHUB_ENV"
           "$CARGO_TARGET_DIR/release/bundle" "$RUNNER_TEMP/gate-app" --resources "$res"
           app="$RUNNER_TEMP/gate-app/roves-cef-macos-gate.app"
@@ -146,6 +157,9 @@ jobs:
             name="roves-cef-macos-gate Helper$helper"
             test -x "$app/Contents/Frameworks/$name.app/Contents/MacOS/$name" \
               || { echo "::error::missing helper $name"; exit 1; }
+          done
+          for f in Roves-LICENSE.txt MetalMania-OFL.txt CEF-LICENSE.txt CEF-CREDITS.html; do
+            test -s "$app/Contents/Resources/licenses/$f" || { echo "::error::missing Contents/Resources/licenses/$f"; exit 1; }
           done
           file "$app/Contents/MacOS/roves-cef-macos-gate"
           echo "APP=$app" >> "$GITHUB_ENV"

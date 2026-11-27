@@ -463,12 +463,14 @@ visual-novel-template-roves-cef\
   play.dll            this probe (Release)
   icon.png            the game's window icon, only when the game has one ("Project icon")
   roves.ico           the official Roves icon, the fallback for tools that replace game\
-  libcef.dll, *.pak, locales\, ...   CEF runtime, as bundled by cef-rs
+  libcef.dll, *.pak, locales\, ...   CEF runtime, as bundled by cef-rs (the bundle binary
+                      removes the build-only CMakeLists.txt, archive.json and libcef.lib)
   vcruntime140*.dll   only if a module imports the MSVC runtime (app-local copy)
   game\               the template's dist\, byte for byte
   PROVENANCE.txt      engine/template commits, pins, build commands, licenses
   provenance\         Cargo.lock, rust-dependencies.txt (crate + license), template
-                      package-lock.json and npm ls, imports.txt, licenses\
+                      package-lock.json and npm ls, imports.txt, licenses\ (Roves, Metal
+                      Mania OFL, CEF-LICENSE.txt, CEF-CREDITS.html moved from the bundle)
   SHA256SUMS.txt
 ```
 

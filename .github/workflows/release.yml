@@ -166,6 +166,12 @@ jobs:
                   if name not in files:
                       fail(asset, f'lacks {name}')
 
+          # Build-only files of the CEF distribution, and the license files every package
+          # ships (Windows in provenance/licenses/, Linux in licenses/, macOS in
+          # Contents/Resources/licenses/).
+          BUILD_ONLY = ['CMakeLists.txt', 'archive.json', 'libcef.lib']
+          LICENSES = ['Roves-LICENSE.txt', 'MetalMania-OFL.txt', 'CEF-LICENSE.txt', 'CEF-CREDITS.html']
+
           def forbid(asset, files, prefixes):
               for name in files:
                   if any(name == p or name.startswith(p + '/') for p in prefixes):
@@ -178,7 +184,8 @@ jobs:
                   continue
               require(asset, files, ['play.exe', 'play.dll', 'play.exe.manifest', 'libcef.dll', 'roves.ico',
                                      'PROVENANCE.txt', 'SHA256SUMS.txt'])
-              forbid(asset, files, ['game', 'icon.png'])
+              forbid(asset, files, ['game', 'icon.png'] + BUILD_ONLY + ['CREDITS.html'])
+              require(asset, files, [f'provenance/licenses/{name}' for name in LICENSES])
               if any(n.startswith('provenance/visual-novel-template-') for n in files):
                   fail(asset, 'still carries the sample game provenance')
               if kind == 'steam':
@@ -238,6 +245,7 @@ jobs:
               lib = f'{app}/Contents/MacOS/libsteam_api.dylib'
               (require if kind == 'steam' else forbid)(asset, files, [lib])
               resources = f'{app}/Contents/Resources'
+              require(asset, files, [f'{resources}/licenses/{name}' for name in LICENSES])
               if kind == 'mcp':
                   require(asset, files, [f'{resources}/{name}' for name in MCP_FILES])
               else:
@@ -255,6 +263,8 @@ jobs:
               for name in ['roves-cef-linux-gate', 'chrome-sandbox']:
                   if name in files and not mode(files[name]) & 0o111:
                       fail(asset, f'{name} is not executable in the zip (unix modes lost)')
+              forbid(asset, files, BUILD_ONLY + ['CREDITS.html'])
+              require(asset, files, [f'licenses/{name}' for name in LICENSES])
               if 'chrome-sandbox' in files and mode(files['chrome-sandbox']) & stat.S_ISUID:
                   fail(asset, 'chrome-sandbox carries a setuid bit without its root owner')
               (require if kind == 'steam' else forbid)(asset, files, ['libsteam_api.so'])

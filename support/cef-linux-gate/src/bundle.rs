@@ -11,6 +11,28 @@
 //!
 //! Built with the `steam` feature (README "Steam"), it also copies steamworks-sys's
 //! `libsteam_api.so` next to the executable, where the gate's `$ORIGIN` run path finds it.
+//!
+//! After cef's bundler: the build-only files of the CEF distribution (`BUILD_ONLY`) are
+//! removed; `CREDITS.html` (Chromium's third-party notices) moves into `licenses/` with CEF's,
+//! Roves' and Metal Mania's licenses; the CEF shared libraries are stripped with
+//! `strip --strip-unneeded` (CEF's Linux `libcef.so` ships ~1.2 GB of symbols and debug
+//! sections that are never loaded at run time; the dynamic symbol table is kept).
+
+/// Files of the CEF distribution needed only to build against CEF, never at run time.
+#[cfg(target_os = "linux")]
+const BUILD_ONLY: [&str; 2] = ["CMakeLists.txt", "archive.json"];
+
+/// CEF's shared libraries, stripped in place (Valve's `libsteam_api.so` is copied untouched).
+#[cfg(target_os = "linux")]
+const CEF_LIBRARIES: [&str; 3] = ["libcef.so", "libvk_swiftshader.so", "libvulkan.so.1"];
+
+/// License files written into `licenses/` (`CEF-CREDITS.html` is moved there from the bundle).
+#[cfg(target_os = "linux")]
+const LICENSES: [(&str, &[u8]); 3] = [
+    ("Roves-LICENSE.txt", include_bytes!("../../../LICENSE")),
+    ("MetalMania-OFL.txt", include_bytes!("../../../resources/fonts/MetalMania-OFL.txt")),
+    ("CEF-LICENSE.txt", include_bytes!("../../../resources/licenses/CEF-LICENSE.txt")),
+];
 
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,6 +46,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let exe = std::env::current_exe()?;
     let target = exe.parent().ok_or("bundle: executable has no directory")?;
     let gate = cef::build_util::linux::bundle(&output, target, "roves-cef-linux-gate")?;
+    for file in BUILD_ONLY {
+        match std::fs::remove_file(output.join(file)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {},
+        }
+    }
+    let licenses = output.join("licenses");
+    std::fs::create_dir_all(&licenses)?;
+    std::fs::rename(output.join("CREDITS.html"), licenses.join("CEF-CREDITS.html"))
+        .map_err(|e| format!("moving CEF CREDITS.html into licenses/: {e}"))?;
+    for (name, bytes) in LICENSES {
+        std::fs::write(licenses.join(name), bytes)?;
+    }
+    for lib in CEF_LIBRARIES.map(|name| output.join(name)) {
+        if !lib.is_file() {
+            continue;
+        }
+        let before = std::fs::metadata(&lib)?.len();
+        let status = std::process::Command::new("strip")
+            .arg("--strip-unneeded")
+            .arg(&lib)
+            .status()
+            .map_err(|e| format!("running strip: {e}"))?;
+        if !status.success() {
+            return Err(format!("strip {} failed: {status}", lib.display()).into());
+        }
+        let after = std::fs::metadata(&lib)?.len();
+        println!("stripped {}: {before} -> {after} bytes", lib.display());
+    }
     #[cfg(feature = "steam")]
     {
         let lib = steam_lib::find(target, "libsteam_api.so")?;

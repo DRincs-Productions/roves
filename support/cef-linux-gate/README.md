@@ -377,7 +377,9 @@ supported by the CEF Linux DMA-BUF path.
 Xvfb, `mesa-vulkan-drivers`), rustc 1.99.1 check, host notice (`/dev/dri`, `vulkaninfo`),
 cargo/CEF cache, dependency graph check, `cargo build --locked --release --bins`,
 `target/release/bundle` and a layout check (`libcef.so`, `chrome-sandbox`, `icudtl.dat`,
-`resources.pak`, `v8_context_snapshot.bin`, `locales/en-US.pak`, `$ORIGIN`, `ldd`), then
+`resources.pak`, `v8_context_snapshot.bin`, `locales/en-US.pak`, `$ORIGIN`, `ldd`; no
+`CMakeLists.txt`/`archive.json`/`CREDITS.html` at the root, the four files of `licenses/`, a
+stripped `libcef.so`: `bundle` runs `strip --strip-unneeded` on CEF's libraries), then
 `chrome-sandbox` made root 4755. Two runs under `xvfb-run` with a 150 s hard stop: setuid
 layer 1 (`apparmor_restrict_unprivileged_userns=1`) and user-namespace layer 1 (`=0`). Each
 fails on any `gate: FAIL`, a missing `mode=fixture`, `cef initialized sandbox=Sandboxed

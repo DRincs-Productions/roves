@@ -1,3 +1,27 @@
+## 2026-11-27 - Player packages: build-only CEF files removed, license notices, stripped libcef.so
+
+Changed: `support/cef-windows-player/src/bin/bundle.rs`, `support/cef-linux-gate/src/bundle.rs`,
+`.github/workflows/{cef-windows-player,cef-linux-gate,cef-macos-gate,release}.yml`,
+new `resources/licenses/CEF-LICENSE.txt`, the three player READMEs, `README.md`, `TODO.md`,
+roves-wiki `player.mdx`.
+Why: user review of the v0.9.0 packages. cef-rs' Windows/Linux bundlers copy every top-level
+file of the CEF distribution, so the packages carried the build-only `CMakeLists.txt`,
+`archive.json` (cef-rs download metadata) and, on Windows, `libcef.lib`; the bundle binaries
+now delete them. `CREDITS.html` (Chromium's third-party notices, which the BSD/MIT/LGPL
+components require with the binaries) moves into the license folder instead of the package
+root. The workflow's copy of CEF license files never matched anything (download-cef 3.0.1 drops
+the distribution's `LICENSE.txt`), so no package carried CEF's own BSD license and the macOS
+package carried no notices at all: CEF's `LICENSE.txt` (upstream `chromiumembedded/cef`) is now
+in the repository and every package ships Roves, Metal Mania OFL, CEF license and CEF credits in
+`provenance\licenses\` (Windows), `licenses/` (Linux) or `Contents/Resources/licenses/` (macOS,
+through the bundler's `--resources`). Linux: CEF's `libcef.so` was unstripped (1.45 GB of
+1.7 GB unpacked; the zip was twice the Windows one); `bundle` runs `strip --strip-unneeded` on
+CEF's shared libraries (only symbol and debug sections go; the dynamic symbol table and the
+loaded segments are unchanged, so behavior and run-time cost are unchanged). Kept on purpose:
+`d3dcompiler_47`/`dxcompiler`/`dxil` (ANGLE/Dawn D3D, wgpu DXC), the SwiftShader/Vulkan
+fallback, `chrome_200_percent.pak` (HiDPI), all locales. `release.yml` checks every zip for the
+license files and the absence of the build-only files.
+
 ## 2026-11-26 - AGENTS.md, TODO.md and docs/ trimmed to the CEF player
 
 Changed: `AGENTS.md` (633 -> 450 lines), `TODO.md`, `docs/DEPENDENCY_REVIEW.md` (rewritten);

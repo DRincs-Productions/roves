@@ -408,7 +408,9 @@ content arrived, not ordering or tearing.
 `macos-26` (Apple silicon; `macos-15` until 2026-11-26), push on this directory or the workflow, or manual. Steps: rustc
 1.99.1 check and Ninja (`cef-dll-sys` uses CMake's Ninja generator); cargo/CEF cache;
 dependency graph check; `cargo build --locked --release --bins`; `target/release/bundle`
-and a structure check (main executable, framework, `libcef_sandbox.dylib`, five helpers);
+and a structure check (main executable, framework, `libcef_sandbox.dylib`, five helpers,
+`Contents/Resources/licenses/` with the Roves, Metal Mania, CEF licenses and the CEF
+distribution's `CREDITS.html`, copied through `--resources`);
 one sandboxed run with a 150 s hard stop. The run step fails on any `gate: FAIL`, a missing
 `mode=fixture`, `cef initialized sandbox=Sandboxed`, Metal adapter, `mode=AcceleratedPaint`,
 `PASS sandbox`, `browser closed`, `cef shutdown complete` or `shutdown complete exit=<code>`

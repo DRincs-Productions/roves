@@ -107,4 +107,6 @@ engine and a Netrender compositor were also evaluated and dropped. The git histo
 ## License
 
 [Mozilla Public License 2.0](LICENSE). Bundled third-party components (CEF/Chromium, SDL3,
-wgpu, wgpu-weld, the Steamworks redistributable) keep their own licenses.
+wgpu, wgpu-weld, the Steamworks redistributable) keep their own licenses. Every package ships
+the license texts and Chromium's third-party notices (`provenance\licenses\` on Windows,
+`licenses/` on Linux, `Contents/Resources/licenses/` on macOS).
