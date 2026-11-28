@@ -988,6 +988,28 @@ mod tests {
         )
     }
 
+    /// The same vector as roves-cli's `tests/mods.test.ts` (`roves mod pack` signs DLC): seed
+    /// `[7; 32]`, one file `a.txt` = `hello`. Ed25519 is deterministic, so both must agree.
+    #[test]
+    fn signature_matches_roves_cli() {
+        let key = SigningKey::from_bytes(&KEY_SEED);
+        let b64 = base64::engine::general_purpose::STANDARD;
+        assert_eq!(
+            b64.encode(key.verifying_key().as_bytes()),
+            "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw="
+        );
+        let hello: String = Sha256::digest(b"hello")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let hashes = BTreeMap::from([("a.txt".to_owned(), hello)]);
+        let signature = key.sign(signed_message(&hashes).as_bytes());
+        assert_eq!(
+            b64.encode(signature.to_bytes()),
+            "EP/2mIItr5dbtcYTndI9032Noh1FI5nGnIlFaz4GzmBCJ7zsrQT65JiU9Za0uFyEhWJRAvP9wYNYqDOafuB0Cg=="
+        );
+    }
+
     #[test]
     fn game_file_and_ids() {
         assert!(

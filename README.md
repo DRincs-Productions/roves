@@ -70,7 +70,8 @@ versions it supports as an npm range, libraries) and an optional `cover` image. 
 `overrides/` folder replace the game's, and its `main` module runs when the game calls
 `mods.loadAll(api)` from `@drincs/roves-api/mods`, which also lists add-ons and turns them on
 and off. DLC must be signed with the game's own key, so only the game's developer can make
-them. The packaging side in roves-cli (`roves mod init/dev/pack`) is not there yet. Details in
+them. roves-cli packs and checks add-ons (`roves dlc keygen`, `roves mod init/dev/check/pack`,
+`roves bundle --dlc`/`--no-mods`); the player loads them from v0.9.2. Details in
 the [wiki](https://github.com/DRincs-Productions/roves-wiki) and
 [support/cef-windows-player/README.md](support/cef-windows-player/README.md) ("Mods and DLC").
 

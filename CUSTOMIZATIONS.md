@@ -1,3 +1,21 @@
+## 2026-11-28 - roves-cli packs, signs and checks mods and DLC (phase 2)
+
+Changed: roves-cli (`src/mods.ts` new, `desktop.ts`, `assemble.ts`, `cli.ts`, `content.ts`,
+`index.ts`, `tests/mods.test.ts` new, `tests/cli.test.ts`, README, `package.json`: `semver`,
+`tinyglobby`); `support/cef-windows-player/src/mods.rs` (shared signature vector test);
+`skills/core/SKILL.md`, `README.md`, `TODO.md`; roves-wiki `integrations/mods-dlc`.
+
+Why: user request (phase 2 of mods and DLC). `roves bundle` writes `game/roves-game.json` from
+the game's `package.json` (`--project-dir`, `--no-mods`) and ships signed DLC in `dlc/`
+(`--dlc`, `--dlc-key`/`ROVES_DLC_KEY`); `roves dlc keygen` creates the game's Ed25519 key pair
+(private key in `roves-dlc-key.pem`, git-ignored; public key in `package.json`); `roves mod
+init/dev/check/pack` create, run unpacked (`--roves-dev-mod`), check and pack add-ons. Signing
+uses `node:crypto` (no dependency); a fixed Ed25519 vector is asserted by both the roves-cli and
+the player tests, so the two signature implementations cannot drift. Libraries: `semver` (npm's
+own range rules, for `mod check`), `tinyglobby` (the `files` field as `npm pack` reads it;
+`npm-packlist` rejected: it needs `@npmcli/arborist`, far larger, and does not bundle into the
+standalone executable easily). `--dlc` needs player v0.9.2 or a local `--shell-zip`.
+
 ## 2026-11-27 - Mods and DLC in the three players and roves-api (phase 1)
 
 Changed: new `support/cef-windows-player/src/mods.rs` (mounted by `server.rs`, shared by the
