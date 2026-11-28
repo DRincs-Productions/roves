@@ -15,7 +15,7 @@ Fatto il 27 novembre 2026: scoperta, compatibilità, firma DLC, stato, route e m
 nei tre player (`support/cef-windows-player/src/mods.rs`) e in roves-api (`mods`,
 `process.relaunch`). Da fare, nell'ordine:
 
-- [ ] **Mod kit:** `roves bundle` scrive per i modder i tipi dell'API passata a `loadAll`, le librerie condivise, nome e versione del gioco; `roves mod init --kit`. (Il resto di roves-cli è fatto: `dlc keygen`, `mod init/dev/check/pack`, `bundle --dlc/--no-mods/--project-dir`.)
+- [ ] **Mod kit:** `roves bundle` scrive per i modder i tipi dell'API passata a `loadAll`, le librerie condivise, nome e versione del gioco; `roves mod init --kit`. (Il resto di roves-cli è fatto: `mod init/dev/check/pack`, registro `roves-dlc.json`, `bundle --dlc/--no-mods/--project-dir`.)
 - [ ] **`roves mod dev` su macOS/Linux:** provato solo con test sintetici; verificare l'avvio del player e il riavvio su modifica con un pacchetto reale.
 - [ ] **Librerie condivise (fase 3):** import map generato da roves-cli/plugin Vite per le librerie che il gioco condivide, chunk separati; `shared` in `roves-game.json`. Le mod con `peerDependencies` restano incompatibili finché il gioco non condivide le librerie.
 - [ ] **roves-action, Packmaster:** opzioni `--mods`, `--dlc`; Packmaster con selettore "Game / Mods & DLC" e schermata per creare e impacchettare una mod.
