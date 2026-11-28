@@ -4,7 +4,7 @@ import * as Tone from "tone";
 /**
  * Audio smoke test via Tone.js -- what a real game is actually likely to use
  * (synths, players, effects chains) rather than raw
- * AudioContext/OscillatorNode calls. See CUSTOMIZATIONS.md's "GStreamer
+ * AudioContext/OscillatorNode calls. See the former CUSTOMIZATIONS.md (roves 791eff000a6)'s "GStreamer
  * audio sink" diagnostic entries: an earlier raw-WebAudio version of this
  * test (creating and closing a fresh AudioContext per click) produced no/
  * erratic audio on at least one real machine, while Tone.js's single reused

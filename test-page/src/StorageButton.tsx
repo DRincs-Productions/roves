@@ -2,7 +2,7 @@ import { useState } from "react";
 
 /**
  * localStorage round-trip check. A game needs to persist save data, and
- * this fork's `file://` origin stability fix (see ../../CUSTOMIZATIONS.md's
+ * this fork's `file://` origin stability fix (see the former CUSTOMIZATIONS.md (roves 791eff000a6)'s
  * "Stable file:// origin" entry) is exactly what storage partitioning keys
  * off of — this is the simplest possible check that writes/reads land
  * instead of silently no-op'ing under a `file://` document.

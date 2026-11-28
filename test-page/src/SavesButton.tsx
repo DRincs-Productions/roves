@@ -5,7 +5,7 @@ import { useState } from "react";
  * `saves:` protocol round-trip check, via the real `@drincs/roves-api/saves`
  * wrapper a game actually imports (same "test the real wrapper, not just the
  * raw protocol" reasoning as App.tsx's steam checks) — see
- * ../../CUSTOMIZATIONS.md's "Save-game storage API" entry for the full
+ * the former CUSTOMIZATIONS.md (roves 791eff000a6)'s "Save-game storage API" entry for the full
  * design (where saves land, Steam Cloud mirroring, etc.).
  *
  * Exercises write → read → list → delete → read-after-delete, so a broken

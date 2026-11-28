@@ -170,7 +170,7 @@ async function probeCapabilities() {
   })();
 
   // The real `@drincs/roves-api/steam`/`@drincs/roves-api/saves` wrappers —
-  // see CUSTOMIZATIONS.md's "steam: protocol bridge"/"Save-game storage API"
+  // see the former CUSTOMIZATIONS.md (roves 791eff000a6)'s "steam: protocol bridge"/"Save-game storage API"
   // entries for why both degrade to `false` instead of throwing when
   // unavailable (`isAvailable()` already swallows that itself on each). Only
   // `isAvailable()` here, not a full round-trip — see SavesButton.tsx for the

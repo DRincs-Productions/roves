@@ -60,7 +60,7 @@ function downloadBlob(content: BlobPart, filename: string, type = "application/o
  *
  * Steam checks: two deliberately separate ones, at two different layers —
  * "raw fetch" hand-rolls `fetch("steam:is_available")` directly against the
- * `steam:` protocol handler (see ../../CUSTOMIZATIONS.md's "steam: protocol
+ * `steam:` protocol handler (see the former CUSTOMIZATIONS.md (roves 791eff000a6)'s "steam: protocol
  * bridge" entry), while "roves-api" instead calls the real
  * `@drincs/roves-api/steam` wrapper the actual game imports — now a normal
  * published npm dependency (see package.json), not resolved through the

@@ -404,7 +404,7 @@ async function fixture([exe, fixtureDir, out]) {
     const typed = await until("typed text", 10_000, async () => {
       const value = (await evaluate("({ typed: rovesMcpFixture.typed, input: document.getElementById('text-target').value })")).value;
       // Linux commits text through CEF's IME path: the field gets the text and `input` fires,
-      // but there is no `keypress` (CUSTOMIZATIONS.md, 2026-11-26).
+      // but there is no `keypress` (the former CUSTOMIZATIONS.md (roves 791eff000a6), 2026-11-26).
       const keypress = process.platform === "linux" || value.typed === "roves";
       return { done: value.input === "roves" && keypress, value };
     });

@@ -117,7 +117,7 @@ frame sequences, page text and controls, HTML/CSS inspection and the PixiJS scen
 | `test-page/` | A web page exercising Web APIs inside the player |
 | `roves-action`, `roves-cli`, `roves-packmaster`, `roves-api`, `roves-vscode`, `roves-wiki` | The ecosystem's other repositories, as submodules |
 
-[`CUSTOMIZATIONS.md`](CUSTOMIZATIONS.md) is the changelog of every significant change and its
+The git history records every significant change and its
 reason; [`TODO.md`](TODO.md) is the open backlog; [`AGENTS.md`](AGENTS.md) holds the rules for
 coding agents. Heavy builds run in CI; [`docs/ROVES_PERFORMANCE.md`](docs/ROVES_PERFORMANCE.md)
 describes how performance is measured against Chrome.
@@ -128,8 +128,8 @@ Roves (an anagram of *Servo*) began as a customized copy of the [Servo](https://
 web engine, later running its JavaScript on V8 instead of SpiderMonkey. On 2026-11-23 the
 desktop product moved to the CEF player and the Servo and V8 sources were removed from `main`;
 `v0.7.15` is the last Servo-based release and still serves the mobile builds. A Blitz/Deno
-engine and a Netrender compositor were also evaluated and dropped. The git history and
-`CUSTOMIZATIONS.md` keep the details.
+engine and a Netrender compositor were also evaluated and dropped. The git history keeps the
+details (the changelog kept until 2026-11-28 is at [roves 791eff000a6](https://github.com/DRincs-Productions/roves/blob/791eff000a6/CUSTOMIZATIONS.md)).
 
 ## License
 

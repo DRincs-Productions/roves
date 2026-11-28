@@ -2,8 +2,8 @@
 
 ## Lingua e direzione del progetto
 
-- **In chat rispondi sempre in italiano.** Codice, commit e `CUSTOMIZATIONS.md` restano
-  in inglese. Non si creano file patch di tracciamento, né verso upstream né per le librerie
+- **In chat rispondi sempre in italiano.** Codice, commit e documentazione del repository
+  restano in inglese. Non si creano file patch di tracciamento, né verso upstream né per le librerie
   vendorizzate: il sorgente si modifica direttamente (vedi "Independent source" sotto).
 - **Meno codice nostro.** Delegare il più possibile a librerie mantenute da altri e scrivere
   solo il codice che serve a farle lavorare insieme. Togliere il codice non usato e, quando una
@@ -300,12 +300,14 @@ Strict rules for it, every time one is provided, in any repo in this ecosystem:
 - **It expires.** When a call starts failing with 401/"Bad credentials", say so explicitly
   and ask for a fresh one — don't guess or keep retrying with a dead token.
 
-## Keep CUSTOMIZATIONS.md up to date
+## No changelog file: the why goes in commits and component READMEs
 
-For every significant change (behavior, build/bundle surface, platform support, dependencies),
-add or update an entry in [`CUSTOMIZATIONS.md`](./CUSTOMIZATIONS.md) in the same turn: files
-touched, what changed and why. It is the prose changelog of the engine; no matching patch
-file is required or wanted.
+`CUSTOMIZATIONS.md` was removed on 2026-11-28 at the user's request and must not be recreated
+or updated; there is no prose changelog file. For every significant change, write what changed
+and why (including the library evaluation and the Chromium comparison) in the commit message,
+and keep the README of the component touched (e.g. `support/cef-windows-player/README.md`)
+accurate. Old entries stay readable at the last commit that had the file:
+https://github.com/DRincs-Productions/roves/blob/791eff000a6/CUSTOMIZATIONS.md.
 
 ## CRITICAL: keep `roves-action`, `roves-cli` and Packmaster in sync with the player
 
@@ -333,11 +335,10 @@ depends on whether a game developer using the GUI would plausibly want to contro
 
 ## CRITICAL: the wiki must always be kept up to date — for anything, not just features
 
-`CUSTOMIZATIONS.md` (above) records *what changed and why*, for maintainers. That's a different audience from *someone using Roves right now* —
-a game developer bundling their game, or a player hitting a problem — who reads
-[`README.md`](./README.md) and the [`roves-wiki`](https://github.com/DRincs-Productions/roves-wiki)
-docs site instead, and neither of those updates automatically just because
-`CUSTOMIZATIONS.md` did.
+Commit messages and component READMEs (above) record *what changed and why*, for maintainers.
+That's a different audience from *someone using Roves right now* — a game developer bundling
+their game, or a player hitting a problem — who reads [`README.md`](./README.md) and the
+[`roves-wiki`](https://github.com/DRincs-Productions/roves-wiki) docs site instead.
 
 **This isn't scoped to "new user-facing features" alone — read it as "for anything."** A new
 packaging option or package output is the clearest case, but the same same-turn obligation
@@ -361,10 +362,9 @@ missing one, since it reads as current and misleads whoever trusts it.
    checkout present" means in practice) — same rule applies: if it isn't present, say so
    explicitly rather than silently skipping this.
 
-Do this unprompted, the same way `CUSTOMIZATIONS.md` gets updated unprompted — don't wait to
-be asked, and don't treat "I already wrote the `CUSTOMIZATIONS.md` entry" as covering this
-too. A change that's only documented in `CUSTOMIZATIONS.md` is invisible to everyone except
-maintainers; a real user has no reason to ever open that file.
+Do this unprompted — don't wait to be asked, and don't treat a good commit message as
+covering this too. A change that's only documented in git history is invisible to everyone
+except maintainers.
 
 ## CRITICAL: pushing a fix to `main` is not enough — cut a release and bump the pin too
 
