@@ -21,6 +21,12 @@
 //!   Recognized DLC are enabled by default. An optional `steamAppId` also requires Steam to
 //!   report the DLC as installed.
 //! - The same id more than once: the highest version wins (ties: the first place found).
+//! - Shared libraries (`roves-game.json` `shared`): the developer builds each library to share
+//!   as its own entry chunk named after the package (roves-cli finds it and records `file`);
+//!   `/__mods/_shared/<lib>.js` re-exports that chunk (`export * from "/<file>"`), so an add-on
+//!   built with the library `external` gets the game's own instance. A redirect would not do:
+//!   the module map is keyed by the requested URL, so it would load a second instance. npm names
+//!   cannot start with `_`, so `_shared` never collides with an add-on id.
 //! - Serving (`server.rs`): an active add-on's `overrides/<path>` replaces or adds the game
 //!   file `<path>` (a later add-on in the load order wins), and its own files are served at
 //!   `/__mods/<id>/<path>`. Only active add-ons are served, except the cover, as Chromium
@@ -60,6 +66,8 @@ pub const ARCHIVE_EXT: &str = "rovesmod";
 pub const OVERRIDES: &str = "overrides/";
 /// URL prefix of add-on files.
 pub const URL_PREFIX: &str = "/__mods/";
+/// Shared-library modules, after [`URL_PREFIX`].
+pub const SHARED_PREFIX: &str = "_shared/";
 /// `roves mod dev`: an unpacked add-on folder, loaded first; a DLC there needs no registration.
 #[allow(dead_code)] // the macOS/Linux switch loops; the Windows parser matches `dev-mod`
 pub const DEV_SWITCH: &str = "--roves-dev-mod=";
@@ -140,8 +148,19 @@ pub struct Game {
     pub mods: bool,
     /// Official DLC: id -> version -> SHA-256 (lowercase hex) of the `.rovesmod` file.
     pub dlc: BTreeMap<String, BTreeMap<String, String>>,
-    /// Libraries the game shares with add-ons, with their exact versions.
-    pub shared: BTreeMap<String, Version>,
+    /// Libraries the game shares with add-ons.
+    pub shared: BTreeMap<String, SharedLib>,
+}
+
+/// One shared library of `roves-game.json`.
+#[derive(Clone, Debug)]
+pub struct SharedLib {
+    pub version: Version,
+    /// The entry chunk, relative to the game root; `None` in the older `"lib": "version"` form
+    /// (checked for compatibility, but not served).
+    pub file: Option<String>,
+    /// Whether the chunk has a default export.
+    pub default: bool,
 }
 
 impl Game {
@@ -186,12 +205,26 @@ impl Game {
         }
         let mut shared = BTreeMap::new();
         if let Some(map) = json["shared"].as_object() {
-            for (lib, version) in map {
-                let version = version
+            for (lib, entry) in map {
+                let version = entry
                     .as_str()
+                    .or_else(|| entry["version"].as_str())
                     .and_then(|v| Version::parse(v).ok())
-                    .ok_or_else(|| format!("\"shared\".{lib} is not a version"))?;
-                shared.insert(lib.clone(), version);
+                    .ok_or_else(|| format!("\"shared\".{lib} has no valid version"))?;
+                let file = entry["file"].as_str().map(str::to_owned);
+                if let Some(file) = &file
+                    && !valid_inner_path(file)
+                {
+                    return Err(format!("\"shared\".{lib}.file {file:?} is not a game path"));
+                }
+                shared.insert(
+                    lib.clone(),
+                    SharedLib {
+                        version,
+                        file,
+                        default: entry["default"].as_bool().unwrap_or(false),
+                    },
+                );
             }
         }
         Ok(Game {
@@ -443,6 +476,8 @@ struct Inner {
     state: Mutex<State>,
     state_dir: Option<PathBuf>,
     summary: String,
+    /// The game's shared libraries, served at `/__mods/_shared/<lib>.js`.
+    shared: BTreeMap<String, SharedLib>,
 }
 
 /// Mods and DLC of one run; cheap to clone.
@@ -599,6 +634,7 @@ impl Mods {
         );
         Mods(Arc::new(Inner {
             supported: game.mods,
+            shared: game.shared.clone(),
             addons,
             active,
             state: Mutex::new(boot.clone()),
@@ -611,6 +647,7 @@ impl Mods {
     fn empty(supported: bool, boot: State, state_dir: Option<PathBuf>, summary: String) -> Mods {
         Mods(Arc::new(Inner {
             supported,
+            shared: BTreeMap::new(),
             addons: Vec::new(),
             active: Vec::new(),
             state: Mutex::new(boot.clone()),
@@ -618,6 +655,19 @@ impl Mods {
             state_dir,
             summary,
         }))
+    }
+
+    /// `_shared/<lib>.js` (decoded, after [`URL_PREFIX`]) -> the module that re-exports the
+    /// game's chunk of that library; `None` for anything else.
+    pub fn shared_module(&self, rest: &str) -> Option<String> {
+        let lib = rest.strip_prefix(SHARED_PREFIX)?.strip_suffix(".js")?;
+        let file = self.0.shared.get(lib)?.file.as_deref()?;
+        let url = format!("/{}", encode_path(file));
+        let mut code = format!("export * from {url:?};\n");
+        if self.0.shared[lib].default {
+            code.push_str(&format!("export {{ default }} from {url:?};\n"));
+        }
+        Some(code)
     }
 
     /// One line for the player's log.
@@ -762,15 +812,15 @@ fn check_static(addon: &mut Addon, game: &Game, steam: Option<&SteamHandle>) {
     }
     for (lib, range) in &addon.peer {
         let ok = match (game.shared.get(lib), Range::parse(range)) {
-            (Some(version), Ok(range)) => version.satisfies(&range),
+            (Some(shared), Ok(range)) => shared.version.satisfies(&range),
             _ => false,
         };
         if !ok {
             let has = game
                 .shared
                 .get(lib)
-                .map_or("not shared by the game".to_owned(), |v| {
-                    format!("the game shares {v}")
+                .map_or("not shared by the game".to_owned(), |s| {
+                    format!("the game shares {}", s.version)
                 });
             addon
                 .problems
@@ -1307,5 +1357,58 @@ mod tests {
         assert_eq!(get(&origin, "/__mods/on/../../game/a.txt").0, 404);
         assert_eq!(get(&origin, "/__mods/nope/x").0, 404);
         server.stop().unwrap();
+    }
+
+    #[test]
+    fn shared_libraries_reexport_the_game_chunk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = install(
+            tmp.path(),
+            r#""pixi.js":{"version":"8.19.0","file":"assets/pixi.js-DHJl7f-w.js","default":false},
+               "@drincs/pixi-vn":{"version":"1.3.4","file":"assets/pixi-vn-AbCdEf12.js","default":true},
+               "tone":"15.1.0""#,
+            true,
+        );
+        write(
+            tmp.path(),
+            "install/mods/m/package.json",
+            &package(
+                "m",
+                r#""peerDependencies":{"pixi.js":"^8","tone":"^15"},"#,
+                "",
+            ),
+        );
+        let game_dir = config.game_dir.clone();
+        let mods = Mods::discover(config);
+        // The older "lib": "version" form still counts for compatibility.
+        assert_eq!(info(&mods, "m")["active"], true, "{}", mods.summary());
+        let server =
+            super::super::start_with_mods(&game_dir, 0, Some(mods), |_| axum::Router::new())
+                .unwrap();
+        let origin = server.origin.clone();
+        assert_eq!(
+            get(&origin, "/__mods/_shared/pixi.js.js"),
+            (
+                200,
+                "export * from \"/assets/pixi.js-DHJl7f-w.js\";\n".into()
+            )
+        );
+        assert_eq!(
+            get(&origin, "/__mods/_shared/@drincs/pixi-vn.js"),
+            (
+                200,
+                "export * from \"/assets/pixi-vn-AbCdEf12.js\";\n\
+                 export { default } from \"/assets/pixi-vn-AbCdEf12.js\";\n"
+                    .into()
+            )
+        );
+        // Known but without a chunk, or unknown: nothing to serve.
+        assert_eq!(get(&origin, "/__mods/_shared/tone.js").0, 404);
+        assert_eq!(get(&origin, "/__mods/_shared/three.js").0, 404);
+        server.stop().unwrap();
+        assert!(Game::parse(
+            r#"{"format":1,"name":"g","version":"1.0.0","shared":{"x":{"version":"1.0.0","file":"../x.js"}}}"#
+        )
+        .is_err());
     }
 }

@@ -66,9 +66,6 @@ Unix modes, the setuid `chrome-sandbox` and macOS framework symlinks survive.
 | `--steam`                   | Package the Steam variant (`roves_shell_<platform>_steam.zip`).                                                                                                                             |
 | `--steam-app-id <id>`       | Write `steam_appid.txt` with this App ID next to the executable (for local testing outside Steam; Steam itself does not need it). Requires `--steam`.                                       |
 | `--enable-mcp`              | Package the MCP development player (`roves_shell_<platform>_mcp.zip`). Cannot be combined with `--steam`.                                                                                   |
-| `--no-mods`                 | Do not load third-party mods (default: `package.json` `roves.mods`, else allowed). DLC still load.                                                                                         |
-| `--dlc <path>` | Ship an official DLC in `dlc/` next to `game/`: a DLC folder (packed and registered in the project's `roves-dlc.json`) or a registered `.rovesmod`. Repeatable. |
-| `--project-dir <dir>`       | The game's project folder with `package.json` (name and version that add-ons are checked against). Default: the nearest one above the content dir.                                         |
 | `-n, --name <name>`         | Base name of the zip and of the folder inside it. Default `roves-game`.                                                                                                                     |
 | `-o, --out-dir <dir>`       | Where outputs are written. Default: current directory.                                                                                                                                      |
 | `--no-extract`              | Write only the zip, not the unzipped folder.                                                                                                                                                |
@@ -157,29 +154,36 @@ otherwise Chromium stops with "No usable sandbox!".
 **macOS**: the `.app` is not signed or notarized; signing and notarizing is your release step.
 **Windows**: `play.exe` is not code-signed.
 
-## Mods and DLC (`roves mod`)
+## Libraries that must run as one instance
 
-`roves bundle` writes `game/roves-game.json` from the game's `package.json` (found above the
-content dir, or `--project-dir`): its `name` and `version` (what add-ons are checked against),
-whether mods are allowed (`roves.mods`, or `--no-mods`), the libraries the game shares
-(`roves.shared`) and the official DLC from the project's `roves-dlc.json`. Without a
-`package.json` the package has no mod or DLC support (a warning). The player loads add-ons from
-player v0.9.2: it lists a DLC only when its `.rovesmod` file is the registered build (same
-SHA-256), and enables it by default; with the same id twice, the highest version wins.
+Some libraries break when a page loads them twice: they keep global state or registries, own the
+one WebGL or audio context, or rely on `instanceof` across modules. Typical ones in games:
+`pixi.js` and `@pixi/*`, `@drincs/pixi-vn`, `phaser`, `three`, `@babylonjs/core`, `excalibur`,
+`kaplay`/`kaboom`, `matter-js`, `planck`, `tone`, `howler`, `@pixi/sound`, `motion`/
+`framer-motion`, `gsap`, and the UI framework (`react`/`react-dom`, `vue`, `solid-js`).
 
-| Command | What it does |
-| ------- | ------------ |
-| `roves mod init [dir] --game <package> \| --game-name <name> [--kind dlc]` | Creates `package.json` (`name`, `version`, `main`, `files`, `roves.game` with `^<game version>`), `index.js` (a `defineMod` starter) and `overrides/`; in an existing project only adds the `roves` section. |
-| `roves mod dev [dir] --game <package>` | Runs an unzipped package of the game with the folder loaded unpacked (`--roves-dev-mod`; a DLC there needs no registration). `overrides/` is read live; other changes restart the game (`--no-watch` to turn it off). |
-| `roves mod check [mod] --game <package> [--json]` | The player's checks against that package: game name and version range, shared libraries, `main`, and for a DLC whether that `.rovesmod` is registered. Exit code 1 when incompatible. |
-| `roves mod pack [dir] [-o <dir>] [--project-dir <game>] [--json]` | Writes the files `npm pack` would take (`files`, plus `package.json` and `cover.*`; never `node_modules` or `.git`), `dependencies` rewritten to the installed versions, deterministic. A mod becomes `<id>-<version>.rovesmod`; a DLC becomes `<id>.rovesmod` and is registered (id, version, SHA-256) in the game project's `roves-dlc.json` (found above the DLC folder, or `--project-dir`). Keep `roves-dlc.json` in the repository. |
-| `roves bundle --dlc <path>` | Ships an official DLC in `dlc/` next to `game/`: a DLC folder (packed and registered first) or a `.rovesmod` already registered. Repeatable. A new DLC, or a new version, is recognized only by game builds made after it was registered. |
+When you set up or change a game's Vite build, give each of these its own **entry chunk named
+after the package without its scope** (`@drincs/pixi-vn` -> `pixi-vn`), with the public API kept:
 
-An add-on's `package.json`: `name` (id), `displayName`, `description`, `author`, `version`,
-`main`, `files`, `peerDependencies` (libraries reused from the game), `dependencies` (bundled),
-and `roves`: `kind` (`mod`/`dlc`), `game: {name, version}` (npm range), `mods` (required
-add-ons), `steamAppId` (DLC). The cover is `cover.png`/`cover.jpg`/`cover.webp`; files in
-`overrides/` replace the game's.
+```js
+// vite.config.js
+export default {
+    build: {
+        rollupOptions: {
+            input: { index: "index.html", "pixi.js": "pixi.js", "pixi-vn": "@drincs/pixi-vn", tone: "tone" },
+            preserveEntrySignatures: "strict",
+        },
+    },
+};
+```
+
+The game still loads one copy (its code imports from those chunks), and add-ons can use the very
+same instance. Do **not** use `output.manualChunks` for this: a manual chunk exports only a few
+minified internal names, not the library's API. `roves bundle` records the chunks it finds and
+warns about single-instance libraries that have none, or that were split with `manualChunks`.
+
+Mods and DLC (making, testing, packing, shipping, and how they use these libraries) are covered by
+the **roves-mods** skill; GitHub Actions workflows with roves-action by **roves-github-action**.
 
 ## `roves android`: Android APK
 

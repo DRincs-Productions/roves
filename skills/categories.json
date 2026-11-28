@@ -1,5 +1,7 @@
 {
     "roves": "core",
     "roves-diagnostics": "diagnostics",
-    "roves-playtest": "playtest"
+    "roves-playtest": "playtest",
+    "roves-mods": "mods",
+    "roves-github-action": "github-action"
 }

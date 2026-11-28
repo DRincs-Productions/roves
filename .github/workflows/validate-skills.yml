@@ -19,7 +19,31 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - run: npm run skills:validate
+      # Repository-side checks (the repository is a Rust project: no package.json, plain Python
+      # from the runner): every skills/<folder>/SKILL.md has a name and a description, names are
+      # unique, and skills/categories.json maps exactly those names to their folders.
+      - name: Validate the skills folder
+        shell: python3 {0}
+        run: |
+          import json, pathlib, re, sys
+          root = pathlib.Path("skills")
+          found = {}
+          for skill in sorted(root.glob("*/SKILL.md")):
+              text = skill.read_text(encoding="utf-8")
+              head = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n", text, re.S)
+              if not head:
+                  sys.exit(f"{skill}: no frontmatter")
+              fields = dict(re.findall(r"^(name|description):\s*(.+)$", head.group(1), re.M))
+              name = fields.get("name", "").strip().strip("'\"")
+              if not name or not fields.get("description", "").strip():
+                  sys.exit(f"{skill}: name and description are required")
+              if name in found:
+                  sys.exit(f"{skill}: duplicate name {name} (also {found[name]})")
+              found[name] = skill.parent.name
+          categories = json.loads((root / "categories.json").read_text(encoding="utf-8"))
+          if categories != found:
+              sys.exit(f"skills/categories.json {categories} does not match skills/ {found}")
+          print("skills:", found)
       - name: Check skills.sh discovery
         run: npx --yes skills@latest add "$GITHUB_REPOSITORY@latest" --skill '*' --agent codex -g --list -y
       - name: Check global installation

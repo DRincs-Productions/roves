@@ -122,6 +122,20 @@ pub fn start_with_mods(
         let files = files.clone();
         let addons = addons.clone();
         async move {
+            // Shared libraries: a generated module re-exporting the game's own chunk.
+            if let Some(code) = addons.as_ref().and_then(|(mods, _)| {
+                let rest = req.uri().path().strip_prefix(mods::URL_PREFIX)?;
+                mods.shared_module(&String::from_utf8(percent_decode(rest)?).ok()?)
+            }) {
+                let mut response = Response::new(Body::from(code));
+                let headers = response.headers_mut();
+                headers.insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/javascript; charset=utf-8"),
+                );
+                headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+                return Ok(response);
+            }
             let routed = addons.and_then(|(mods, sources)| {
                 addon_route(&mods, req.uri()).map(|(index, uri)| (sources, index, uri))
             });

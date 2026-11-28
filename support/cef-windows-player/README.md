@@ -860,7 +860,8 @@ three players and `support/cef-host-api-tests` share it. User documentation: the
 
 - **Game identity:** `game/roves-game.json` (written by roves-cli next to the build or the
   content archives, never inside them): `{"format": 1, "name", "version", "mods": bool,
-  "dlc": {id: {version: sha256}}, "shared": {lib: version}}`, `name`/`version` from the
+  "dlc": {id: {version: sha256}}, "shared": {lib: {version, file, default}}}` (the older
+  `{lib: version}` form is still read), `name`/`version` from the
   game's `package.json`. Without the file the game has no mod support (older packages): the
   `mods` module answers `is_supported` false and an empty list.
 - **Discovery** (once, before the server starts; one `mods ...` log line): every
@@ -886,6 +887,14 @@ three players and `support/cef-host-api-tests` share it. User documentation: the
   2026-11-28: no signature or key). Recognized DLC are enabled by default. The whole file is
   hashed at launch; a `steamAppId` also needs Steam's `is_dlc_installed`. A `kind: "mod"` in
   `dlc/` is refused.
+- **Shared libraries:** the game's developer builds each library to share as its own entry
+  chunk named after the package (`preserveEntrySignatures: "strict"`); roves-cli records its
+  `file`. `/__mods/_shared/<lib>.js` answers a generated module `export * from "/<file>"` (plus
+  `export { default }` when the chunk has one), so an add-on built with the library `external`
+  and `output.paths` to that URL shares the game's module instance. A redirect would not: the
+  module map is keyed by the requested URL. No import map, inline script or change to the game's
+  `index.html`. `_shared` cannot collide with an add-on id (npm names cannot start with `_`).
+  Verified with Vite 8 and pixi.js 8.19 in Chrome: the mod's `Sprite` is the game's class.
 - **Compatibility:** game name and version range, shared libraries, then required add-ons
   (present, enabled, compatible, in range), repeated until stable. Every reason is reported in
   `problems`; an add-on with problems never loads.

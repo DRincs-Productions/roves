@@ -309,6 +309,23 @@ and keep the README of the component touched (e.g. `support/cef-windows-player/R
 accurate. Old entries stay readable at the last commit that had the file:
 https://github.com/DRincs-Productions/roves/blob/791eff000a6/CUSTOMIZATIONS.md.
 
+## Keep the agent skills up to date
+
+The skills in `skills/` (one folder each, mapped in `skills/categories.json`, installable with
+`npx skills add DRincs-Productions/roves`) are how coding agents learn to use Roves in game
+projects: `roves` (packaging with the CLI, single-instance libraries), `roves-mods` (mods and
+DLC), `roves-github-action` (workflows with roves-action), `roves-diagnostics`, `roves-playtest`.
+
+- In the same turn as any change they describe (a CLI option or command, a package layout, the
+  host API, roves-action inputs, mod/DLC rules, MCP tools), update the matching skill, as you do
+  for the wiki. A stale skill makes agents write broken code in game projects.
+- Keep each skill on its own topic; do not grow `roves` with material that belongs to another
+  skill.
+- When a change introduces a **new topic** that none of the skills covers, ask the user whether
+  it should become a separate skill before adding it to an existing one. A new skill needs its
+  folder, a `SKILL.md` with `name` and `description`, and an entry in `skills/categories.json`
+  (checked by `.github/workflows/validate-skills.yml`).
+
 ## CRITICAL: keep `roves-action`, `roves-cli` and Packmaster in sync with the player
 
 The desktop packages are built by `release.yml` and consumed by

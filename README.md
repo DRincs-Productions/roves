@@ -69,7 +69,8 @@ a folder or a `.rovesmod` file with a `package.json` (id, name, description, ver
 versions it supports as an npm range, libraries) and an optional `cover` image. Files in its
 `overrides/` folder replace the game's, and its `main` module runs when the game calls
 `mods.loadAll(api)` from `@drincs/roves-api/mods`, which also lists add-ons and turns them on
-and off. Only the game's official DLC load: roves-cli records each packed DLC in the game
+and off. Libraries that must run once (such as `pixi.js`) are shared with mods when the game
+builds them as entry chunks named after the package. Only the game's official DLC load: roves-cli records each packed DLC in the game
 project and the package carries that list. roves-cli packs and checks add-ons
 (`roves mod init/dev/check/pack`, `roves bundle --dlc`/`--no-mods`); the player loads them from
 v0.9.2. Details in
@@ -103,7 +104,10 @@ game through its development MCP bridge, and `roves-playtest`
 ([`skills/playtest`](skills/playtest/SKILL.md)) lets an agent play and test it: screenshots and
 frame sequences, page text and controls, HTML/CSS inspection and the PixiJS scene
 ([PixiJS devtools reference](skills/playtest/references/pixijs-devtools.md)).
-`categories.json` maps each skill to its folder.
+`roves-mods` ([`skills/mods`](skills/mods/SKILL.md)) covers mods and DLC, including how a game
+shares single-instance libraries such as `pixi.js` with them, and `roves-github-action`
+([`skills/github-action`](skills/github-action/SKILL.md)) writes GitHub Actions workflows with
+roves-action. [`skills/categories.json`](skills/categories.json) maps each skill to its folder.
 
 ## Repository layout
 
