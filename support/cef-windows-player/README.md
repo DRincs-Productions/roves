@@ -860,7 +860,7 @@ three players and `support/cef-host-api-tests` share it. User documentation: the
 
 - **Game identity:** `game/roves-game.json` (written by roves-cli next to the build or the
   content archives, never inside them): `{"format": 1, "name", "version", "mods": bool,
-  "dlcPublicKey": base64 Ed25519, "shared": {lib: version}}`, `name`/`version` from the
+  "dlc": {id: {version: sha256}}, "shared": {lib: version}}`, `name`/`version` from the
   game's `package.json`. Without the file the game has no mod support (older packages): the
   `mods` module answers `is_supported` false and an empty list.
 - **Discovery** (once, before the server starts; one `mods ...` log line): every
@@ -868,7 +868,8 @@ three players and `support/cef-host-api-tests` share it. User documentation: the
   `<profile root>/mods`. An add-on is a folder with `package.json` or a `.rovesmod` file (a ZIP
   of that folder, memory-mapped through `content::Content::open_archive`, entries stored or
   deflated). With `"mods": false`, `mods/` folders are not scanned and dev mods are refused;
-  DLC still load. A broken `package.json` or a duplicate id is skipped and logged.
+  DLC still load. A broken `package.json` is skipped and logged; with the same id more than
+  once the highest semver version wins (ties: the first place found), the others are logged.
 - **package.json:** `name` (id, npm rules), `displayName`, `description`, `author`,
   `version` (semver), `main` (ES module, optional), `peerDependencies` (libraries reused from
   the game: each must be in `shared` with a version in range), `dependencies` (bundled,
@@ -876,16 +877,15 @@ three players and `support/cef-host-api-tests` share it. User documentation: the
   (required add-ons with ranges), `steamAppId` (DLC). Ranges follow npm through
   `nodejs-semver` (the `semver` crate's Cargo rules differ: bare versions, `||`, hyphen
   ranges). The cover is `cover.png`/`cover.jpg`/`cover.webp` at the root.
-- **DLC are the developer's:** a DLC (outside `--roves-dev-mod`) must carry
-  `roves-signature.json` `{"format": 1, "files": {path: sha256 hex}, "signature": base64}`.
-  The Ed25519 signature (`ed25519-dalek` `verify_strict`) covers
-  `roves-dlc-signature-v1
-` plus one `<sha256>  <path>
-` line per file in path order; every
-  other file must be listed and match its SHA-256 (`sha2`), so nothing can be added, removed or
-  changed. The key pair belongs to the game's source (roves-cli); only the public key ships.
-  The whole DLC is hashed at launch (a few hundred MB/s to GB/s); a `steamAppId` also needs
-  Steam's `is_dlc_installed`. A `kind: "mod"` in `dlc/` is refused.
+- **Official DLC only:** outside `--roves-dev-mod`, a DLC must be a `.rovesmod` file whose
+  SHA-256 (`sha2`, read in 1 MiB blocks) is `dlc[id][version]` in `roves-game.json`. roves-cli
+  records it in the game project's `roves-dlc.json` when it packs the DLC and copies the list
+  into the package. Any other DLC (unregistered id or version, a different build, a folder) is
+  left out of the list with a log note, so an unmodified game never starts an unofficial DLC;
+  someone who edits the installed game can change the list, which is accepted (user decision
+  2026-11-28: no signature or key). Recognized DLC are enabled by default. The whole file is
+  hashed at launch; a `steamAppId` also needs Steam's `is_dlc_installed`. A `kind: "mod"` in
+  `dlc/` is refused.
 - **Compatibility:** game name and version range, shared libraries, then required add-ons
   (present, enabled, compatible, in range), repeated until stable. Every reason is reported in
   `problems`; an add-on with problems never loads.
@@ -907,8 +907,9 @@ three players and `support/cef-host-api-tests` share it. User documentation: the
   `set_order` (JSON array body). roves-api `mods.loadAll(api)` imports each active `main_url`
   and calls its `activate(api, info)`.
 - **Tests:** `support/cef-host-api-tests` (`server::mods::tests`): game file and ids,
-  compatibility rules, signed/tampered/extended/unsigned DLC, Steam DLC without Steam, mods
-  turned off, state and load order across two launches, a `.rovesmod` archive, and the
+  compatibility rules, official, changed, unregistered and folder DLC, Steam DLC without Steam, mods
+  turned off, the highest version winning, state and load order across two launches, a
+  `.rovesmod` archive, and the
   routes over real HTTP (override, encoded path, own files, inactive cover, `..`, unknown id).
 
 ## Steam (`steam` feature, off by default; implemented 2026-11-25, not yet run in CI)

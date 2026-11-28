@@ -373,11 +373,6 @@ impl Content {
         })
     }
 
-    /// Every entry path, in no particular order.
-    pub fn paths(&self) -> impl Iterator<Item = &str> {
-        self.inner.entries.keys().map(String::as_str)
-    }
-
     /// Whether the path is an entry (directory redirects: `dir` -> `dir/`).
     pub fn contains(&self, path: &str) -> bool {
         self.inner.entries.contains_key(path)

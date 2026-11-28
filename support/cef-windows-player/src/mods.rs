@@ -4,8 +4,8 @@
 //!
 //! - The game: `game/roves-game.json`, written by roves-cli next to the build (or next to the
 //!   content archives), with the `name` and `version` of the game's `package.json`, whether
-//!   mods are allowed, the DLC public key and the libraries the game shares. A game without
-//!   it has no mod support (older packages).
+//!   mods are allowed, the official DLC (`dlc`: id -> version -> SHA-256 of the `.rovesmod`)
+//!   and the libraries the game shares. A game without it has no mod support (older packages).
 //! - Add-ons: a folder with a `package.json` or a `.rovesmod` file (a ZIP of that folder,
 //!   read through [`Content::open_archive`]), found in `dlc/` and `mods/` next to `game/`,
 //!   in `<profile root>/mods`, and in every `--roves-dev-mod=<folder>` (`roves mod dev`).
@@ -14,10 +14,13 @@
 //!   `dependencies` = libraries bundled by the add-on) and a `roves` section (`kind`,
 //!   `game: {name, version}`, `mods`, `steamAppId`). Ranges follow npm (`nodejs-semver`).
 //! - The cover is the file named `cover.png`, `cover.jpg` or `cover.webp` at the root.
-//! - DLC can only come from the game's developer: a DLC must carry `roves-signature.json`,
-//!   an Ed25519 signature (made by `roves mod pack` with the key kept with the game's
-//!   source) over the SHA-256 of every other file, verified with the game's public key.
-//!   An optional `steamAppId` also requires Steam to report the DLC as installed.
+//! - Official DLC only: outside `--roves-dev-mod`, a DLC must be a `.rovesmod` file whose
+//!   SHA-256 is the one `game.dlc[id][version]` records (`roves mod pack` registers it in the
+//!   game project, `roves bundle` copies the list into the package). Anything else is left
+//!   out of the list (a log note): an unmodified game never starts an unofficial DLC.
+//!   Recognized DLC are enabled by default. An optional `steamAppId` also requires Steam to
+//!   report the DLC as installed.
+//! - The same id more than once: the highest version wins (ties: the first place found).
 //! - Serving (`server.rs`): an active add-on's `overrides/<path>` replaces or adds the game
 //!   file `<path>` (a later add-on in the load order wins), and its own files are served at
 //!   `/__mods/<id>/<path>`. Only active add-ons are served, except the cover, as Chromium
@@ -38,8 +41,6 @@ use std::{
 };
 
 use axum::http::StatusCode;
-use base64::Engine as _;
-use ed25519_dalek::{Signature, VerifyingKey};
 use nodejs_semver::{Range, Version};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -53,21 +54,17 @@ pub const GAME_FILE: &str = "roves-game.json";
 const GAME_FORMAT: u64 = 1;
 /// An add-on's manifest.
 pub const PACKAGE: &str = "package.json";
-/// A DLC's signature file.
-pub const SIGNATURE: &str = "roves-signature.json";
 /// Extension of a packed add-on.
 pub const ARCHIVE_EXT: &str = "rovesmod";
 /// Folder of the replaced and added game files inside an add-on.
 pub const OVERRIDES: &str = "overrides/";
 /// URL prefix of add-on files.
 pub const URL_PREFIX: &str = "/__mods/";
-/// `roves mod dev`: an unpacked add-on folder, loaded first and never signature-checked.
+/// `roves mod dev`: an unpacked add-on folder, loaded first; a DLC there needs no registration.
 #[allow(dead_code)] // the macOS/Linux switch loops; the Windows parser matches `dev-mod`
 pub const DEV_SWITCH: &str = "--roves-dev-mod=";
 /// Saved state in the profile root.
 const STATE_FILE: &str = "mods.json";
-/// First line of the signed message (domain separation).
-const SIGNATURE_DOMAIN: &str = "roves-dlc-signature-v1\n";
 const COVERS: [&str; 3] = ["cover.png", "cover.jpg", "cover.webp"];
 
 /// What a player hands to [`Mods::discover`].
@@ -114,70 +111,35 @@ impl Files {
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, path.to_owned())),
         }
     }
-
-    /// Lowercase hex SHA-256 of one file (folders are streamed, archives hashed in place).
-    fn sha256(&self, path: &str) -> io::Result<String> {
-        let mut hasher = Sha256::new();
-        match self {
-            Files::Dir(root) => {
-                let mut file = File::open(root.join(path))?;
-                let mut buffer = vec![0u8; 1 << 20];
-                loop {
-                    let read = file.read(&mut buffer)?;
-                    if read == 0 {
-                        break;
-                    }
-                    hasher.update(&buffer[..read]);
-                }
-            },
-            Files::Packed(content) => {
-                let hit = content
-                    .get(path)
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, path.to_owned()))?;
-                hasher.update(&hit.bytes);
-            },
-        }
-        Ok(hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect())
-    }
-
-    /// Every file path, `/`-separated, sorted.
-    fn list(&self) -> io::Result<Vec<String>> {
-        let mut out = Vec::new();
-        match self {
-            Files::Dir(root) => walk(root, "", &mut out)?,
-            Files::Packed(content) => out.extend(content.paths().map(str::to_owned)),
-        }
-        out.sort();
-        Ok(out)
-    }
 }
 
-fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let kind = entry.file_type()?;
-        let path = format!("{prefix}{name}");
-        if kind.is_dir() {
-            walk(&entry.path(), &format!("{path}/"), out)?;
-        } else if kind.is_file() {
-            out.push(path);
+/// Lowercase hex SHA-256 of a whole file, read in 1 MiB blocks.
+pub fn file_sha256(path: &Path) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut file = File::open(path)?;
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
         }
+        hasher.update(&buffer[..read]);
     }
-    Ok(())
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 /// The game's `roves-game.json`.
 pub struct Game {
     pub name: String,
     pub version: Version,
-    /// Third-party mods allowed (`roves bundle --mods=false` turns them off; DLC still load).
+    /// Third-party mods allowed (`roves bundle --no-mods` turns them off; DLC still load).
     pub mods: bool,
-    pub key: Option<VerifyingKey>,
+    /// Official DLC: id -> version -> SHA-256 (lowercase hex) of the `.rovesmod` file.
+    pub dlc: BTreeMap<String, BTreeMap<String, String>>,
     /// Libraries the game shares with add-ons, with their exact versions.
     pub shared: BTreeMap<String, Version>,
 }
@@ -205,20 +167,23 @@ impl Game {
         let name = name.ok_or("no \"name\"")?.to_owned();
         let version = json["version"].as_str().ok_or("no \"version\"")?;
         let version = Version::parse(version).map_err(|e| format!("\"version\": {e}"))?;
-        let key = match json["dlcPublicKey"].as_str() {
-            None => None,
-            Some(text) => {
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(text)
-                    .ok()
-                    .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                    .ok_or("\"dlcPublicKey\" is not a base64 Ed25519 public key")?;
-                Some(
-                    VerifyingKey::from_bytes(&bytes)
-                        .map_err(|_| "\"dlcPublicKey\" is not a valid Ed25519 key")?,
-                )
-            },
-        };
+        let mut dlc = BTreeMap::new();
+        if let Some(map) = json["dlc"].as_object() {
+            for (id, versions) in map {
+                let versions = versions
+                    .as_object()
+                    .ok_or_else(|| format!("\"dlc\".{id} must map versions to SHA-256"))?;
+                dlc.insert(
+                    id.clone(),
+                    versions
+                        .iter()
+                        .filter_map(|(v, h)| {
+                            h.as_str().map(|h| (v.clone(), h.to_ascii_lowercase()))
+                        })
+                        .collect(),
+                );
+            }
+        }
         let mut shared = BTreeMap::new();
         if let Some(map) = json["shared"].as_object() {
             for (lib, version) in map {
@@ -233,7 +198,7 @@ impl Game {
             name,
             version,
             mods: json["mods"].as_bool().unwrap_or(true),
-            key,
+            dlc,
             shared,
         })
     }
@@ -435,49 +400,6 @@ pub fn encode_path(path: &str) -> String {
     out
 }
 
-/// Checks a DLC's `roves-signature.json` against the game's key and every file's hash.
-pub fn verify_signature(files: &Files, key: &VerifyingKey) -> Result<(), String> {
-    let text = files
-        .read(SIGNATURE)
-        .map_err(|_| format!("not signed ({SIGNATURE} missing)"))?;
-    let json: Value = serde_json::from_slice(&text).map_err(|e| format!("{SIGNATURE}: {e}"))?;
-    let listed: BTreeMap<String, String> = string_map(&json["files"]);
-    let signature = json["signature"]
-        .as_str()
-        .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
-        .and_then(|b| Signature::from_slice(&b).ok())
-        .ok_or_else(|| format!("{SIGNATURE}: bad \"signature\""))?;
-    key.verify_strict(signed_message(&listed).as_bytes(), &signature)
-        .map_err(|_| "signature does not match this game's key".to_owned())?;
-    let actual: Vec<String> = files
-        .list()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|p| p != SIGNATURE)
-        .collect();
-    if let Some(extra) = actual.iter().find(|p| !listed.contains_key(*p)) {
-        return Err(format!("{extra} is not signed"));
-    }
-    for (path, hash) in &listed {
-        let found = files
-            .sha256(path)
-            .map_err(|_| format!("{path} is missing"))?;
-        if &found != hash {
-            return Err(format!("{path} was modified after signing"));
-        }
-    }
-    Ok(())
-}
-
-/// The signed text: the domain line, then `sha256sum`-style lines in path order.
-pub fn signed_message(files: &BTreeMap<String, String>) -> String {
-    let mut message = String::from(SIGNATURE_DOMAIN);
-    for (path, hash) in files {
-        message.push_str(&format!("{hash}  {path}\n"));
-    }
-    message
-}
-
 #[derive(Clone, Default, PartialEq, Debug)]
 struct State {
     disabled: BTreeSet<String>,
@@ -611,13 +533,32 @@ impl Mods {
                     continue;
                 },
             };
-            if addons.iter().any(|a| a.id == addon.id) {
-                notes.push(format!(
-                    "skipped {}: duplicate id {}",
-                    path.display(),
-                    addon.id
-                ));
+            if addon.kind == Kind::Dlc
+                && location != Location::Dev
+                && let Err(why) = recognized(&path, &addon, &game)
+            {
+                notes.push(format!("skipped {}: {why}", path.display()));
                 continue;
+            }
+            // The same id again: the highest version wins, the first one found on a tie.
+            if let Some(index) = addons.iter().position(|a| a.id == addon.id) {
+                let version = |a: &Addon| Version::parse(&a.version).ok();
+                if version(&addon) > version(&addons[index]) {
+                    notes.push(format!(
+                        "skipped {} {} (newer {} found)",
+                        addons[index].id, addons[index].version, addon.version
+                    ));
+                    addons.remove(index);
+                } else {
+                    notes.push(format!(
+                        "skipped {}: {} {} (version {} found)",
+                        path.display(),
+                        addon.id,
+                        addon.version,
+                        addons[index].version
+                    ));
+                    continue;
+                }
             }
             check_static(&mut addon, &game, config.steam.as_deref());
             addons.push(addon);
@@ -753,7 +694,32 @@ impl Mods {
     }
 }
 
-/// Checks that need only the add-on and the game: kind, signature, Steam, game, libraries.
+/// Whether a DLC (outside dev folders) is one of the game's official DLC: a `.rovesmod` file
+/// whose SHA-256 is registered for its id and version.
+fn recognized(path: &Path, addon: &Addon, game: &Game) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!(
+            "DLC {} is a folder, not a .rovesmod file",
+            addon.id
+        ));
+    }
+    let Some(expected) = game.dlc.get(&addon.id).and_then(|v| v.get(&addon.version)) else {
+        return Err(format!(
+            "DLC {} {} is not an official DLC of this game",
+            addon.id, addon.version
+        ));
+    };
+    let found = file_sha256(path).map_err(|e| e.to_string())?;
+    if &found != expected {
+        return Err(format!(
+            "DLC {} {} differs from the official one (SHA-256 {found})",
+            addon.id, addon.version
+        ));
+    }
+    Ok(())
+}
+
+/// Checks that need only the add-on and the game: kind, Steam, game, libraries.
 fn check_static(addon: &mut Addon, game: &Game, steam: Option<&SteamHandle>) {
     let dev = addon.location == Location::Dev;
     match addon.kind {
@@ -763,16 +729,6 @@ fn check_static(addon: &mut Addon, game: &Game, steam: Option<&SteamHandle>) {
         Kind::Mod if addon.location == Location::Dlc => addon
             .problems
             .push("a mod in the dlc folder (set \"roves.kind\": \"dlc\")".to_owned()),
-        Kind::Dlc if !dev => match &game.key {
-            None => addon
-                .problems
-                .push("this game accepts no DLC (no DLC key)".to_owned()),
-            Some(key) => {
-                if let Err(e) = verify_signature(&addon.files, key) {
-                    addon.problems.push(format!("DLC {e}"));
-                }
-            },
-        },
         _ => {},
     }
     if let Some(app) = addon
@@ -905,10 +861,7 @@ impl Module for Mods {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
     use std::{io::Write, net::TcpStream};
-
-    const KEY_SEED: [u8; 32] = [7; 32];
 
     fn write(root: &Path, path: &str, data: &str) {
         let file = root.join(path);
@@ -927,14 +880,17 @@ mod tests {
 
     /// `<tmp>/install/game` with roves-game.json, plus `<tmp>/profile`.
     fn install(tmp: &Path, shared: &str, mods_allowed: bool) -> ModsConfig {
-        let key = SigningKey::from_bytes(&KEY_SEED).verifying_key();
-        let key = base64::engine::general_purpose::STANDARD.encode(key.as_bytes());
+        install_with_dlc(tmp, shared, mods_allowed, "")
+    }
+
+    /// [`install`] with official DLC: `dlc` is the inside of the `"dlc"` object.
+    fn install_with_dlc(tmp: &Path, shared: &str, mods_allowed: bool, dlc: &str) -> ModsConfig {
         write(
             tmp,
             "install/game/roves-game.json",
             &format!(
                 r#"{{"format":1,"name":"mygame","version":"1.5.2","mods":{mods_allowed},
-                   "dlcPublicKey":"{key}","shared":{{{shared}}}}}"#
+                   "dlc":{{{dlc}}},"shared":{{{shared}}}}}"#
             ),
         );
         write(tmp, "install/game/index.html", "game");
@@ -947,20 +903,19 @@ mod tests {
         }
     }
 
-    /// What `roves mod pack` does for a DLC: hash every file, sign with the game's key.
-    fn sign(root: &Path) {
-        let files = Files::Dir(root.to_owned());
-        let mut hashes = BTreeMap::new();
-        for path in files.list().unwrap() {
-            hashes.insert(path.clone(), files.sha256(&path).unwrap());
+    /// A `.rovesmod` (stored ZIP) with these files; returns its SHA-256.
+    fn pack(path: &Path, files: &[(&str, &str)]) -> String {
+        use std::io::Write as _;
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, data) in files {
+            zip.start_file(*name, stored).unwrap();
+            zip.write_all(data.as_bytes()).unwrap();
         }
-        let signature = SigningKey::from_bytes(&KEY_SEED).sign(signed_message(&hashes).as_bytes());
-        let json = json!({
-            "format": 1,
-            "files": hashes,
-            "signature": base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
-        });
-        fs::write(root.join(SIGNATURE), json.to_string()).unwrap();
+        zip.finish().unwrap();
+        file_sha256(path).unwrap()
     }
 
     fn info(mods: &Mods, id: &str) -> Value {
@@ -986,28 +941,6 @@ mod tests {
                 body,
             },
         )
-    }
-
-    /// The same vector as roves-cli's `tests/mods.test.ts` (`roves mod pack` signs DLC): seed
-    /// `[7; 32]`, one file `a.txt` = `hello`. Ed25519 is deterministic, so both must agree.
-    #[test]
-    fn signature_matches_roves_cli() {
-        let key = SigningKey::from_bytes(&KEY_SEED);
-        let b64 = base64::engine::general_purpose::STANDARD;
-        assert_eq!(
-            b64.encode(key.verifying_key().as_bytes()),
-            "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw="
-        );
-        let hello: String = Sha256::digest(b"hello")
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        let hashes = BTreeMap::from([("a.txt".to_owned(), hello)]);
-        let signature = key.sign(signed_message(&hashes).as_bytes());
-        assert_eq!(
-            b64.encode(signature.to_bytes()),
-            "EP/2mIItr5dbtcYTndI9032Noh1FI5nGnIlFaz4GzmBCJ7zsrQT65JiU9Za0uFyEhWJRAvP9wYNYqDOafuB0Cg=="
-        );
     }
 
     #[test]
@@ -1095,13 +1028,15 @@ mod tests {
         assert_eq!(info(&mods, "ok")["active"], true);
         assert_eq!(info(&mods, "ok")["cover_url"], "/__mods/ok/cover.webp");
         assert_eq!(info(&mods, "uses-ok")["active"], true);
+        // An unregistered DLC (here a folder in mods/) is never listed.
+        assert!(!mods.list().to_string().contains("fake-dlc"), "{summary}");
+        assert!(summary.contains("fake-dlc"), "{summary}");
         for (id, problem) in [
             ("old", "needs game version ^2.0.0"),
             ("other", "made for the game theirs"),
             ("peer", "pixi.js ^8, not shared"),
             ("needs", "needs old"),
             ("chain", "needs needs"),
-            ("fake-dlc", "DLC not signed"),
         ] {
             let m = info(&mods, id);
             assert_eq!(m["compatible"], false, "{id}");
@@ -1110,62 +1045,129 @@ mod tests {
     }
 
     #[test]
-    fn dlc_must_be_signed_by_the_game() {
+    fn only_official_dlc_are_listed() {
         let tmp = tempfile::tempdir().unwrap();
-        let config = install(tmp.path(), "", false);
         let dlc = tmp.path().join("install/dlc");
         let kind = r#","kind":"dlc""#;
-        write(&dlc, "signed/package.json", &package("signed", "", kind));
-        write(&dlc, "signed/overrides/a.txt", "dlc a");
-        sign(&dlc.join("signed"));
-        write(
-            &dlc,
-            "tampered/package.json",
-            &package("tampered", "", kind),
+        let chapter = pack(
+            &dlc.join("chapter.rovesmod"),
+            &[
+                ("package.json", &package("chapter", "", kind)),
+                ("overrides/a.txt", "dlc a"),
+            ],
         );
-        write(&dlc, "tampered/x.txt", "original");
-        sign(&dlc.join("tampered"));
-        write(&dlc, "tampered/x.txt", "changed");
-        write(&dlc, "added/package.json", &package("added", "", kind));
-        sign(&dlc.join("added"));
-        write(&dlc, "added/extra.js", "evil");
-        write(
-            &dlc,
-            "steam/package.json",
-            &package("steam", "", r#","kind":"dlc","steamAppId":480"#),
+        let steam_dlc = pack(
+            &dlc.join("steam.rovesmod"),
+            &[(
+                "package.json",
+                &package("steam", "", r#","kind":"dlc","steamAppId":480"#),
+            )],
         );
-        sign(&dlc.join("steam"));
+        // Registered with another hash, another version, or not at all.
+        pack(
+            &dlc.join("changed.rovesmod"),
+            &[("package.json", &package("changed", "", kind))],
+        );
+        pack(
+            &dlc.join("newer.rovesmod"),
+            &[(
+                "package.json",
+                &package("newer", "", kind).replace("1.0.0", "2.0.0"),
+            )],
+        );
+        pack(
+            &dlc.join("unknown.rovesmod"),
+            &[("package.json", &package("unknown", "", kind))],
+        );
+        write(&dlc, "folder/package.json", &package("folder", "", kind));
+        let registry = format!(
+            r#""chapter":{{"1.0.0":"{chapter}"}},"steam":{{"1.0.0":"{steam_dlc}"}},
+               "changed":{{"1.0.0":"{}"}},"newer":{{"1.0.0":"{chapter}"}},
+               "folder":{{"1.0.0":"{chapter}"}}"#,
+            "0".repeat(64)
+        );
+        let config = install_with_dlc(tmp.path(), "", false, &registry);
         // Mods are off for this game: a mod is never scanned from mods/ ...
         write(
             tmp.path(),
             "install/mods/m/package.json",
             &package("m", "", ""),
         );
-        // ... and a dev mod is listed but refused.
+        // ... and a dev mod is listed but refused; a dev DLC needs no registration.
         write(tmp.path(), "dev/package.json", &package("dev-mod", "", ""));
+        write(
+            tmp.path(),
+            "dev-dlc/package.json",
+            &package("dev-dlc", "", kind),
+        );
         let mods = Mods::discover(ModsConfig {
-            dev: vec![tmp.path().join("dev")],
+            dev: vec![tmp.path().join("dev"), tmp.path().join("dev-dlc")],
             ..config
         });
-        assert_eq!(info(&mods, "signed")["active"], true, "{}", mods.summary());
+        let summary = mods.summary().to_owned();
+        let chapter = info(&mods, "chapter");
+        assert_eq!(chapter["active"], true, "{summary}");
+        assert_eq!(chapter["enabled"], true);
         assert_eq!(
             mods.overlay("a.txt").map(|(_, p)| p).as_deref(),
             Some("overrides/a.txt")
         );
-        for (id, problem) in [
-            ("tampered", "x.txt was modified"),
-            ("added", "extra.js is not signed"),
-            ("steam", "Steam DLC 480 is not installed"),
-            ("dev-mod", "does not allow mods"),
+        assert_eq!(info(&mods, "dev-dlc")["active"], true);
+        for (id, why) in [
+            ("changed", "differs from the official one"),
+            ("newer", "2.0.0 is not an official DLC"),
+            ("unknown", "1.0.0 is not an official DLC"),
+            ("folder", "is a folder, not a .rovesmod file"),
         ] {
-            let m = info(&mods, id);
-            assert!(m["problems"].to_string().contains(problem), "{id}: {m}");
+            assert!(
+                !mods.list().to_string().contains(&format!("\"{id}\"")),
+                "{id}"
+            );
+            assert!(summary.contains(why), "{id}: {summary}");
         }
+        let steam = info(&mods, "steam");
+        assert!(
+            steam["problems"]
+                .to_string()
+                .contains("Steam DLC 480 is not installed"),
+            "{steam}"
+        );
+        assert!(
+            info(&mods, "dev-mod")["problems"]
+                .to_string()
+                .contains("does not allow mods")
+        );
         assert!(!mods.list().to_string().contains("\"Mod m\""));
         assert_eq!(
             post(&mods, "is_supported", &[], b""),
             Reply::Json(Value::Bool(false))
         );
+    }
+
+    #[test]
+    fn the_highest_version_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = install(tmp.path(), "", true);
+        let versioned = |v: &str| package("same", "", "").replace("1.0.0", v);
+        write(
+            tmp.path(),
+            "install/mods/a/package.json",
+            &versioned("1.0.0"),
+        );
+        write(
+            tmp.path(),
+            "profile/mods/b/package.json",
+            &versioned("1.2.0"),
+        );
+        pack(
+            &tmp.path().join("install/mods/same-1.1.0.rovesmod"),
+            &[("package.json", &versioned("1.1.0"))],
+        );
+        let mods = Mods::discover(config);
+        let same = info(&mods, "same");
+        assert_eq!(same["version"], "1.2.0", "{}", mods.summary());
+        assert_eq!(same["location"], "profile");
+        assert_eq!(mods.list().as_array().unwrap().len(), 1);
     }
 
     #[test]

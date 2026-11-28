@@ -20,7 +20,7 @@ nei tre player (`support/cef-windows-player/src/mods.rs`) e in roves-api (`mods`
 - [ ] **Librerie condivise (fase 3):** import map generato da roves-cli/plugin Vite per le librerie che il gioco condivide, chunk separati; `shared` in `roves-game.json`. Le mod con `peerDependencies` restano incompatibili finché il gioco non condivide le librerie.
 - [ ] **roves-action, Packmaster:** opzioni `--mods`, `--dlc`; Packmaster con selettore "Game / Mods & DLC" e schermata per creare e impacchettare una mod.
 - [ ] **Release e pin:** pubblicare roves-api (versione nuova), release del player, aggiornare i pin; poi togliere "Coming soon" dalla pagina wiki `integrations/mods-dlc` e pubblicarla.
-- [ ] **Verifiche reali:** `core/relaunch` sui tre sistemi (macOS: avvio del binario interno al bundle), DLC grandi (tempo di hash all'avvio: valutare una cache della verifica per dimensione e data), mod con `main` caricata da un gioco Pixi'VN reale.
+- [ ] **Verifiche reali:** `core/relaunch` sui tre sistemi (macOS: avvio del binario interno al bundle), DLC grandi (tempo dello SHA-256 all'avvio: valutare una cache per dimensione e data nel profilo), mod con `main` caricata da un gioco Pixi'VN reale.
 - [ ] **Steam Workshop (rinviato):** iscrizione alle mod tramite UGC di steamworks-rs.
 
 ## Android: integrazione con Google Play — da implementare

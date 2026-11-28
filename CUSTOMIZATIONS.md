@@ -1,3 +1,24 @@
+## 2026-11-28 - Official DLC by registry instead of signatures; highest version wins
+
+Changed: `support/cef-windows-player/src/mods.rs` (no signature: `Game.dlc` registry,
+`recognized`, `file_sha256`; the same id resolved to the highest version), `content.rs`
+(`Content::paths` removed), the four `Cargo.toml`/`Cargo.lock` (`ed25519-dalek` removed),
+the player README; roves-cli (`src/mods.ts`: `roves-dlc.json` registry, `registerDlc`,
+`findGameProject`, `addonFileName`, `recognizedDlc`; `desktop.ts`, `cli.ts`, `index.ts`, tests,
+README; `roves dlc keygen` and `--dlc-key` removed); `skills/core/SKILL.md`, `README.md`,
+`TODO.md`; roves-wiki `integrations/mods-dlc`.
+
+Why: user decision. The game can be decompiled and edited, and whoever edits it to enable an
+unofficial DLC is on their own; what matters is that an unmodified game never starts an
+unofficial DLC, and that official DLC are enabled by default. So no private key or signature:
+`roves mod pack` records each DLC version (id, version, SHA-256 of the deterministic
+`.rovesmod`) in the game project's `roves-dlc.json`, `roves bundle` copies it into
+`game/roves-game.json`, and the player lists a DLC only when its file matches. A new DLC or DLC
+version needs a game build made after it was recorded (accepted). DLC files are named
+`<id>.rovesmod`, mods `<id>-<version>.rovesmod`; with the same id twice the player keeps the
+highest version instead of the first one found. The 2026-11-27/28 entries below describe the
+earlier signature design, now removed.
+
 ## 2026-11-28 - roves-cli packs, signs and checks mods and DLC (phase 2)
 
 Changed: roves-cli (`src/mods.ts` new, `desktop.ts`, `assemble.ts`, `cli.ts`, `content.ts`,
